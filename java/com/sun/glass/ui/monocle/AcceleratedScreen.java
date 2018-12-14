@@ -79,6 +79,13 @@ public class AcceleratedScreen {
     AcceleratedScreen(int[] attributes) throws GLException, UnsatisfiedLinkError {
         egl = EGL.getEGL();
         initPlatformLibraries();
+	
+	String prefRes = System.getProperty("com.sun.glass.ui.monocle.prefRes");
+	int prefW = -1, prefH = -1;
+	if (prefRes != null) {
+		prefW = Integer.parseInt(prefRes.split("x")[0]);
+		prefH = Integer.parseInt(prefRes.split("x")[1]);
+	}
 
         int major[] = {0}, minor[]={0};
         
@@ -88,7 +95,7 @@ public class AcceleratedScreen {
         for (File card : cards) {
             //System.out.println("Card " + card.getName());
             
-            if (egl.initDRM(card.toString())) {
+            if (egl.initDRM(card.toString(), prefW, prefH)) {
                 hasDRI = true;
                 break;
             }

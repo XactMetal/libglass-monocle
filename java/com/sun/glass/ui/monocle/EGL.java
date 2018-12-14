@@ -220,7 +220,7 @@ class EGL {
 
     native int eglGetError();
     
-    native boolean initDRM(String device);
+    native boolean initDRM(String device, int prefW, int prefH);
     native boolean initGBM();
 
     native boolean eglInitialize(long eglDisplay, int[] major,

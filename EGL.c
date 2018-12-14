@@ -82,12 +82,12 @@ void setEGLAttrs(jint *attrs, int *eglAttrs) {
 }
 
 JNIEXPORT jboolean JNICALL Java_com_sun_glass_ui_monocle_EGL_initDRM
-    (JNIEnv *env, jclass UNUSED(clazz), jstring device) {
+    (JNIEnv *env, jclass UNUSED(clazz), jstring device, jint prefW, jint prefH) {
     
     const char *device_c = (*env)->GetStringUTFChars(env, device, 0);
     if (X_E_DEBUG) printf("Init DRM %s\n", device_c);
     
-    int ret = init_drm(&drm, device_c);
+    int ret = init_drm(&drm, device_c, prefW, prefH);
     
     (*env)->ReleaseStringUTFChars(env, device, device_c);
     
@@ -360,7 +360,7 @@ static int legacy_flip(const struct gbm *gbm, EGLDisplay display, EGLSurface sur
 }
 
 
-int init_drm(struct drm *drm, const char *device)
+int init_drm(struct drm *drm, const char *device, const int32_t prefW, const int32_t prefH)
 {
 	drmModeRes *resources;
 	drmModeConnector *connector = NULL;
@@ -399,11 +399,18 @@ int init_drm(struct drm *drm, const char *device)
 		return -1;
 	}
 
+		if (X_E_DEBUG) printf("Pref %d,%d\n", prefW, prefH);
 	/* find preferred mode or the highest resolution mode: */
 	for (i = 0, area = 0; i < connector->count_modes; i++) {
 		drmModeModeInfo *current_mode = &connector->modes[i];
+		
+		if (X_E_DEBUG) printf("Mode %d,%d: %d\n", current_mode->hdisplay, current_mode->vdisplay, current_mode->type & DRM_MODE_TYPE_PREFERRED);
 
-		if (current_mode->type & DRM_MODE_TYPE_PREFERRED) {
+		// Xact: add user preference over OS preference
+		if (prefW == current_mode->hdisplay && prefH == current_mode->vdisplay) {
+			drm->mode = current_mode;
+			break;	
+		} else if (current_mode->type & DRM_MODE_TYPE_PREFERRED) {
 			drm->mode = current_mode;
 		}
 
