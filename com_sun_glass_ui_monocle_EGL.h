@@ -305,7 +305,7 @@ JNIEXPORT jboolean JNICALL Java_com_sun_glass_ui_monocle_EGL_eglGetConfigAttrib
  * Signature: (J)J
  */
 JNIEXPORT jlong JNICALL Java_com_sun_glass_ui_monocle_EGL_eglGetDisplay
-  (JNIEnv *, jobject, jlong);
+  (JNIEnv *, jobject, jlongArray);
 
 /*
  * Class:     com_sun_glass_ui_monocle_EGL

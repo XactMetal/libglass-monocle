@@ -27,8 +27,15 @@
 
 #include "com_sun_glass_ui_monocle_EGL.h"
 #include "Monocle.h"
+#include "kms_common.h"
 
 #include <stdlib.h>
+#include <stdio.h>
+#include <errno.h>
+#include <inttypes.h>
+#include <fcntl.h>
+#include <string.h>
+#include <sys/select.h>
 
 void setEGLAttrs(jint *attrs, int *eglAttrs) {
     int index = 0;
@@ -70,12 +77,324 @@ void setEGLAttrs(jint *attrs, int *eglAttrs) {
 }
 
 JNIEXPORT jlong JNICALL Java_com_sun_glass_ui_monocle_EGL_eglGetDisplay
-    (JNIEnv *UNUSED(env), jclass UNUSED(clazz), jlong display) {
+    (JNIEnv *UNUSED(env), jclass UNUSED(clazz), jlongArray eglWindowRef) {
     // EGLNativeDisplayType is defined differently on different systems; can be an int or a ptr so cast with care
-    EGLDisplay dpy = eglGetDisplay(((EGLNativeDisplayType) (unsigned long)(display)));
+//XACTTTT
+    printf("Xact eglGetDisplay()\n");
+
+    const char *device = "/dev/dri/card1";
+    static const struct egl *egl;
+    static const struct gbm *gbm;
+    static const struct drm *drm;
+
+    drm = init_drm_legacy(device);
+    if (!drm) {
+        printf("failed to initialize legacy DRM\n");
+        return JNI_FALSE;
+    }
+	gbm = init_gbm(drm->fd, drm->mode->hdisplay, drm->mode->vdisplay,
+			DRM_FORMAT_MOD_LINEAR);
+    if (!gbm) {
+        printf("failed to initialize GBM\n");
+        return -1;
+    }
+    //EGLDisplay dpy = eglGetDisplay(((EGLNativeDisplayType) (unsigned long)(display)));
+    jlong castWindow = asJLong(gbm->surface);
+    EGLDisplay dpy = eglGetDisplay((void *)gbm->dev);
+    (*env)->SetLongArrayRegion(env, eglWindowRef, 0, 1, &castWindow);
     return asJLong(dpy);
 }
 
+//////////////////
+
+
+static uint32_t find_crtc_for_encoder(const drmModeRes *resources,
+		const drmModeEncoder *encoder) {
+	int i;
+
+	for (i = 0; i < resources->count_crtcs; i++) {
+		/* possible_crtcs is a bitmask as described here:
+		 * https://dvdhrm.wordpress.com/2012/09/13/linux-drm-mode-setting-api
+		 */
+		const uint32_t crtc_mask = 1 << i;
+		const uint32_t crtc_id = resources->crtcs[i];
+		if (encoder->possible_crtcs & crtc_mask) {
+			return crtc_id;
+		}
+	}
+
+	/* no match found */
+	return -1;
+}
+
+static uint32_t find_crtc_for_connector(const struct drm *drm, const drmModeRes *resources,
+		const drmModeConnector *connector) {
+	int i;
+
+	for (i = 0; i < connector->count_encoders; i++) {
+		const uint32_t encoder_id = connector->encoders[i];
+		drmModeEncoder *encoder = drmModeGetEncoder(drm->fd, encoder_id);
+
+		if (encoder) {
+			const uint32_t crtc_id = find_crtc_for_encoder(resources, encoder);
+
+			drmModeFreeEncoder(encoder);
+			if (crtc_id != 0) {
+				return crtc_id;
+			}
+		}
+	}
+
+	/* no match found */
+	return -1;
+}
+
+static struct drm drm;
+
+static void page_flip_handler(int fd, unsigned int frame,
+		  unsigned int sec, unsigned int usec, void *data)
+{
+	/* suppress 'unused parameter' warnings */
+	(void)fd, (void)frame, (void)sec, (void)usec;
+
+	int *waiting_for_flip = data;
+	*waiting_for_flip = 0;
+}
+
+static int legacy_run(const struct gbm *gbm, const struct egl *egl)
+{
+	fd_set fds;
+	drmEventContext evctx = {
+			.version = 2,
+			.page_flip_handler = page_flip_handler,
+	};
+	struct gbm_bo *bo;
+	struct drm_fb *fb;
+	uint32_t i = 0;
+	int ret;
+
+	eglSwapBuffers(egl->display, egl->surface);
+	bo = gbm_surface_lock_front_buffer(gbm->surface);
+	fb = drm_fb_get_from_bo(bo);
+	if (!fb) {
+		fprintf(stderr, "Failed to get a new framebuffer BO\n");
+		return -1;
+	}
+
+	/* set mode: */
+	ret = drmModeSetCrtc(drm.fd, drm.crtc_id, fb->fb_id, 0, 0,
+			&drm.connector_id, 1, drm.mode);
+	if (ret) {
+		printf("failed to set mode: %s\n", strerror(errno));
+		return ret;
+	}
+
+	while (1) {
+		struct gbm_bo *next_bo;
+		int waiting_for_flip = 1;
+
+		egl->draw(i++);
+
+		eglSwapBuffers(egl->display, egl->surface);
+		next_bo = gbm_surface_lock_front_buffer(gbm->surface);
+		fb = drm_fb_get_from_bo(next_bo);
+		if (!fb) {
+			fprintf(stderr, "Failed to get a new framebuffer BO\n");
+			return -1;
+		}
+
+		/*
+		 * Here you could also update drm plane layers if you want
+		 * hw composition
+		 */
+
+		ret = drmModePageFlip(drm.fd, drm.crtc_id, fb->fb_id,
+				DRM_MODE_PAGE_FLIP_EVENT, &waiting_for_flip);
+		if (ret) {
+			printf("failed to queue page flip: %s\n", strerror(errno));
+			return -1;
+		}
+
+		while (waiting_for_flip) {
+			FD_ZERO(&fds);
+			FD_SET(0, &fds);
+			FD_SET(drm.fd, &fds);
+
+			ret = select(drm.fd + 1, &fds, NULL, NULL, NULL);
+			if (ret < 0) {
+				printf("select err: %s\n", strerror(errno));
+				return ret;
+			} else if (ret == 0) {
+				printf("select timeout!\n");
+				return -1;
+			} else if (FD_ISSET(0, &fds)) {
+				printf("user interrupted!\n");
+				return 0;
+			}
+			drmHandleEvent(drm.fd, &evctx);
+		}
+
+		/* release last buffer to render on again: */
+		gbm_surface_release_buffer(gbm->surface, bo);
+		bo = next_bo;
+	}
+
+	return 0;
+}
+
+
+int init_drm(struct drm *drm, const char *device)
+{
+	drmModeRes *resources;
+	drmModeConnector *connector = NULL;
+	drmModeEncoder *encoder = NULL;
+	int i, area;
+
+	drm->fd = open(device, O_RDWR);
+
+	if (drm->fd < 0) {
+		printf("could not open drm device\n");
+		return -1;
+	}
+
+	resources = drmModeGetResources(drm->fd);
+	if (!resources) {
+		printf("drmModeGetResources failed: %s\n", strerror(errno));
+		return -1;
+	}
+
+	/* find a connected connector: */
+	for (i = 0; i < resources->count_connectors; i++) {
+		connector = drmModeGetConnector(drm->fd, resources->connectors[i]);
+		if (connector->connection == DRM_MODE_CONNECTED) {
+			/* it's connected, let's use this! */
+			break;
+		}
+		drmModeFreeConnector(connector);
+		connector = NULL;
+	}
+
+	if (!connector) {
+		/* we could be fancy and listen for hotplug events and wait for
+		 * a connector..
+		 */
+		printf("no connected connector!\n");
+		return -1;
+	}
+
+	/* find preferred mode or the highest resolution mode: */
+	for (i = 0, area = 0; i < connector->count_modes; i++) {
+		drmModeModeInfo *current_mode = &connector->modes[i];
+
+		if (current_mode->type & DRM_MODE_TYPE_PREFERRED) {
+			drm->mode = current_mode;
+		}
+
+		int current_area = current_mode->hdisplay * current_mode->vdisplay;
+		if (current_area > area) {
+			drm->mode = current_mode;
+			area = current_area;
+		}
+	}
+
+	if (!drm->mode) {
+		printf("could not find mode!\n");
+		return -1;
+	}
+
+	/* find encoder: */
+	for (i = 0; i < resources->count_encoders; i++) {
+		encoder = drmModeGetEncoder(drm->fd, resources->encoders[i]);
+		if (encoder->encoder_id == connector->encoder_id)
+			break;
+		drmModeFreeEncoder(encoder);
+		encoder = NULL;
+	}
+
+	if (encoder) {
+		drm->crtc_id = encoder->crtc_id;
+	} else {
+		uint32_t crtc_id = find_crtc_for_connector(drm, resources, connector);
+		if (crtc_id == 0) {
+			printf("no crtc found!\n");
+			return -1;
+		}
+
+		drm->crtc_id = crtc_id;
+	}
+
+	for (i = 0; i < resources->count_crtcs; i++) {
+		if (resources->crtcs[i] == drm->crtc_id) {
+			drm->crtc_index = i;
+			break;
+		}
+	}
+
+	drmModeFreeResources(resources);
+
+	drm->connector_id = connector->connector_id;
+
+	return 0;
+}
+
+const struct drm * init_drm_legacy(const char *device)
+{
+	int ret;
+
+	ret = init_drm(&drm, device);
+	if (ret)
+		return NULL;
+
+	drm.run = legacy_run;
+
+	return &drm;
+}
+
+static struct gbm gbm;
+
+WEAK struct gbm_surface *
+gbm_surface_create_with_modifiers(struct gbm_device *gbm,
+                                  uint32_t width, uint32_t height,
+                                  uint32_t format,
+                                  const uint64_t *modifiers,
+                                  const unsigned int count);
+
+const struct gbm * init_gbm(int drm_fd, int w, int h, uint64_t modifier)
+{
+	gbm.dev = gbm_create_device(drm_fd);
+	gbm.format = GBM_FORMAT_XRGB8888;
+	gbm.surface = NULL;
+
+	if (gbm_surface_create_with_modifiers) {
+		gbm.surface = gbm_surface_create_with_modifiers(gbm.dev, w, h,
+								gbm.format,
+								&modifier, 1);
+
+	}
+
+	if (!gbm.surface) {
+		if (modifier != DRM_FORMAT_MOD_LINEAR) {
+			fprintf(stderr, "Modifiers requested but support isn't available\n");
+			return NULL;
+		}
+		gbm.surface = gbm_surface_create(gbm.dev, w, h,
+						gbm.format,
+						GBM_BO_USE_SCANOUT | GBM_BO_USE_RENDERING);
+
+	}
+
+	if (!gbm.surface) {
+		printf("failed to create gbm surface\n");
+		return NULL;
+	}
+
+	gbm.width = w;
+	gbm.height = h;
+
+	return &gbm;
+}
+
+//////////////////
 JNIEXPORT jboolean JNICALL Java_com_sun_glass_ui_monocle_EGL_eglInitialize
     (JNIEnv *env, jclass UNUSED(clazz), jlong eglDisplay, jintArray majorArray,
      jintArray minorArray){
