@@ -41,6 +41,8 @@ public class AcceleratedScreen {
     private EGL egl;
     long eglConfigs[] = {0};
 
+    private long[] context;
+
     /** Returns a platform-specific native display handle suitable for use with
      * eglGetDisplay.
      */
@@ -69,9 +71,18 @@ public class AcceleratedScreen {
 
         int major[] = {0}, minor[]={0};
 
+        if (!egl.initDRM("/dev/dri/card1")) {
+            throw new GLException(egl.eglGetError(),
+                                 "Could not initialize DRM");
+        }
+
+        if (!egl.initGBM()) {
+            throw new GLException(egl.eglGetError(),
+                                 "Could not initialize GBM");
+        }
 
         eglDisplay =
-                egl.eglGetDisplay(nativeWindowRef);
+                egl.eglGetGBMDisplay(nativeWindowRef);
         if (eglDisplay == EGL.EGL_NO_DISPLAY) {
             throw new GLException(egl.eglGetError(),
                                  "Could not get EGL display");
@@ -110,6 +121,12 @@ public class AcceleratedScreen {
             throw new GLException(egl.eglGetError(),
                                   "Could not get EGL context");
         }
+        
+        enableRendering(true);
+        if (!egl.drmInitBuffers(eglDisplay, eglSurface)) {
+            throw new GLException(egl.eglGetError(),
+                                  "Could initialize DRM/GBM buffers");
+        }
     }
 
     private void createSurface() {
@@ -118,6 +135,7 @@ public class AcceleratedScreen {
                                                    nativeWindowRef[0], null);
     }
 
+    private boolean rendering = false;
 
     /** Make the EGL drawing surface current or not
      *
@@ -130,6 +148,7 @@ public class AcceleratedScreen {
         } else {
             egl.eglMakeCurrent(eglDisplay, 0, 0, eglContext);
         }
+        rendering = flag;
     }
 
     /** Load any native libraries needed to instantiate and initialize the
@@ -173,12 +192,13 @@ public class AcceleratedScreen {
     public boolean swapBuffers() {
         boolean result = false;
         synchronized(NativeScreen.framebufferSwapLock) {
-            result = egl.eglSwapBuffers(eglDisplay, eglSurface);
+            if (rendering) result = egl.drmSwapBuffers(eglDisplay, eglSurface);
+            else result = egl.eglSwapBuffers(eglDisplay, eglSurface);
 // TODO this shouldn't happen. In case the surface is invalid, we need to have recreated it before this method is called
-            if (!result) {
-                createSurface();
-                result = egl.eglSwapBuffers(eglDisplay, eglSurface);
-            }
+            //if (!result) {
+            //    createSurface();
+            //    result = egl.eglSwapBuffers(eglDisplay, eglSurface);
+            //}
         }
         return result;
 

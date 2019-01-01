@@ -216,9 +216,12 @@ class EGL {
             int attrib,
             int[] value);
 
-    native long eglGetDisplay(long[] nativeWindowRef);
+    native long eglGetGBMDisplay(long[] nativeWindowRef);
 
     native int eglGetError();
+    
+    native boolean initDRM(String device);
+    native boolean initGBM();
 
     native boolean eglInitialize(long eglDisplay, int[] major,
                                         int[] minor);
@@ -234,6 +237,9 @@ class EGL {
     native String eglQueryVersion(long eglDisplay, int versionType);
 
     native boolean eglSwapBuffers(long eglDisplay, long eglSurface);
+
+    native boolean drmInitBuffers(long eglDisplay, long eglSurface);
+    native boolean drmSwapBuffers(long eglDisplay, long eglSurface);
 
     /** Convert an EGL error code such as EGL_BAD_CONTEXT to a string
      * representation.

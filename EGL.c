@@ -37,6 +37,9 @@
 #include <string.h>
 #include <sys/select.h>
 
+static struct drm drm;
+static struct gbm gbm;
+
 void setEGLAttrs(jint *attrs, int *eglAttrs) {
     int index = 0;
 
@@ -76,37 +79,138 @@ void setEGLAttrs(jint *attrs, int *eglAttrs) {
     eglAttrs[index] = EGL_NONE;
 }
 
-JNIEXPORT jlong JNICALL Java_com_sun_glass_ui_monocle_EGL_eglGetDisplay
-    (JNIEnv *UNUSED(env), jclass UNUSED(clazz), jlongArray eglWindowRef) {
-    // EGLNativeDisplayType is defined differently on different systems; can be an int or a ptr so cast with care
-//XACTTTT
-    printf("Xact eglGetDisplay()\n");
-
-    const char *device = "/dev/dri/card1";
-    static const struct egl *egl;
-    static const struct gbm *gbm;
+JNIEXPORT jboolean JNICALL Java_com_sun_glass_ui_monocle_EGL_initDRM
+    (JNIEnv *env, jclass UNUSED(clazz), jstring device) {
+    
+    const char *device_c = (*env)->GetStringUTFChars(env, device, 0);
+    printf("%s", device_c);
+    
     static const struct drm *drm;
-
-    drm = init_drm_legacy(device);
+    drm = init_drm_legacy(device_c);
+    
+    (*env)->ReleaseStringUTFChars(env, device, device_c);
+    
     if (!drm) {
         printf("failed to initialize legacy DRM\n");
         return JNI_FALSE;
     }
-	gbm = init_gbm(drm->fd, drm->mode->hdisplay, drm->mode->vdisplay,
+    return JNI_TRUE;
+}
+
+JNIEXPORT jboolean JNICALL Java_com_sun_glass_ui_monocle_EGL_initGBM
+    (JNIEnv *env, jclass UNUSED(clazz)) {
+    
+    static const struct gbm *gbm;
+
+	gbm = init_gbm(drm.fd, (drm.mode)->hdisplay, (drm.mode)->vdisplay,
 			DRM_FORMAT_MOD_LINEAR);
     if (!gbm) {
         printf("failed to initialize GBM\n");
-        return -1;
+        return JNI_FALSE;
     }
+    return JNI_TRUE;
+}
+
+JNIEXPORT jlong JNICALL Java_com_sun_glass_ui_monocle_EGL_eglGetGBMDisplay
+    (JNIEnv *UNUSED(env), jclass UNUSED(clazz), jlongArray eglWindowRef) {
+    // EGLNativeDisplayType is defined differently on different systems; can be an int or a ptr so cast with care
+
     //EGLDisplay dpy = eglGetDisplay(((EGLNativeDisplayType) (unsigned long)(display)));
-    jlong castWindow = asJLong(gbm->surface);
-    EGLDisplay dpy = eglGetDisplay((void *)gbm->dev);
+    jlong castWindow = asJLong(gbm.surface);
+    EGLDisplay dpy = eglGetDisplay((void *)(gbm.dev));
     (*env)->SetLongArrayRegion(env, eglWindowRef, 0, 1, &castWindow);
     return asJLong(dpy);
 }
 
 //////////////////
 
+WEAK uint64_t
+gbm_bo_get_modifier(struct gbm_bo *bo);
+
+WEAK int
+gbm_bo_get_plane_count(struct gbm_bo *bo);
+
+WEAK uint32_t
+gbm_bo_get_stride_for_plane(struct gbm_bo *bo, int plane);
+
+WEAK uint32_t
+gbm_bo_get_offset(struct gbm_bo *bo, int plane);
+
+static void
+drm_fb_destroy_callback(struct gbm_bo *bo, void *data)
+{
+	int drm_fd = gbm_device_get_fd(gbm_bo_get_device(bo));
+	struct drm_fb *fb = data;
+
+	if (fb->fb_id)
+		drmModeRmFB(drm_fd, fb->fb_id);
+
+	free(fb);
+}
+
+struct drm_fb * drm_fb_get_from_bo(struct gbm_bo *bo)
+{
+	int drm_fd = gbm_device_get_fd(gbm_bo_get_device(bo));
+	struct drm_fb *fb = gbm_bo_get_user_data(bo);
+	uint32_t width, height, format,
+		 strides[4] = {0}, handles[4] = {0},
+		 offsets[4] = {0}, flags = 0;
+	int ret = -1;
+
+	if (fb)
+		return fb;
+
+	fb = calloc(1, sizeof *fb);
+	fb->bo = bo;
+
+	width = gbm_bo_get_width(bo);
+	height = gbm_bo_get_height(bo);
+	format = gbm_bo_get_format(bo);
+
+	if (gbm_bo_get_modifier && gbm_bo_get_plane_count &&
+	    gbm_bo_get_stride_for_plane && gbm_bo_get_offset) {
+
+		uint64_t modifiers[4] = {0};
+		modifiers[0] = gbm_bo_get_modifier(bo);
+		const int num_planes = gbm_bo_get_plane_count(bo);
+		for (int i = 0; i < num_planes; i++) {
+			strides[i] = gbm_bo_get_stride_for_plane(bo, i);
+			handles[i] = gbm_bo_get_handle(bo).u32;
+			offsets[i] = gbm_bo_get_offset(bo, i);
+			modifiers[i] = modifiers[0];
+		}
+
+		if (modifiers[0]) {
+			flags = DRM_MODE_FB_MODIFIERS;
+			printf("Using modifier %" PRIx64 "\n", modifiers[0]);
+		}
+
+		ret = drmModeAddFB2WithModifiers(drm_fd, width, height,
+				format, handles, strides, offsets,
+				modifiers, &fb->fb_id, flags);
+	}
+
+	if (ret) {
+		if (flags)
+			fprintf(stderr, "Modifiers failed!\n");
+
+		memcpy(handles, (uint32_t [4]){gbm_bo_get_handle(bo).u32,0,0,0}, 16);
+		memcpy(strides, (uint32_t [4]){gbm_bo_get_stride(bo),0,0,0}, 16);
+		memset(offsets, 0, 16);
+		ret = drmModeAddFB2(drm_fd, width, height, format,
+				handles, strides, offsets, &fb->fb_id, 0);
+	}
+
+	if (ret) {
+		printf("failed to create fb: %s\n", strerror(errno));
+		free(fb);
+		return NULL;
+	}
+
+	gbm_bo_set_user_data(bo, fb, drm_fb_destroy_callback);
+
+	return fb;
+}
 
 static uint32_t find_crtc_for_encoder(const drmModeRes *resources,
 		const drmModeEncoder *encoder) {
@@ -149,8 +253,6 @@ static uint32_t find_crtc_for_connector(const struct drm *drm, const drmModeRes 
 	return -1;
 }
 
-static struct drm drm;
-
 static void page_flip_handler(int fd, unsigned int frame,
 		  unsigned int sec, unsigned int usec, void *data)
 {
@@ -161,19 +263,20 @@ static void page_flip_handler(int fd, unsigned int frame,
 	*waiting_for_flip = 0;
 }
 
-static int legacy_run(const struct gbm *gbm, const struct egl *egl)
+static struct gbm_bo *bo;
+static struct drm_fb *fb;
+static fd_set fds;
+static drmEventContext evctx = {
+        .version = 2,
+        .page_flip_handler = page_flip_handler,
+};
+static int legacy_init_surface(const struct gbm *gbm, EGLDisplay display, EGLSurface surface)
 {
-	fd_set fds;
-	drmEventContext evctx = {
-			.version = 2,
-			.page_flip_handler = page_flip_handler,
-	};
-	struct gbm_bo *bo;
-	struct drm_fb *fb;
-	uint32_t i = 0;
+	
+	//uint32_t i = 0;
 	int ret;
 
-	eglSwapBuffers(egl->display, egl->surface);
+	eglSwapBuffers(display, surface);
 	bo = gbm_surface_lock_front_buffer(gbm->surface);
 	fb = drm_fb_get_from_bo(bo);
 	if (!fb) {
@@ -186,60 +289,64 @@ static int legacy_run(const struct gbm *gbm, const struct egl *egl)
 			&drm.connector_id, 1, drm.mode);
 	if (ret) {
 		printf("failed to set mode: %s\n", strerror(errno));
-		return ret;
+	}
+    return ret;
+}
+
+static int legacy_flip(const struct gbm *gbm, EGLDisplay display, EGLSurface surface)
+{
+	int ret;
+
+	
+	struct gbm_bo *next_bo;
+	int waiting_for_flip = 1;
+
+	//egl->draw(i++);
+
+	eglSwapBuffers(display, surface);
+	next_bo = gbm_surface_lock_front_buffer(gbm->surface);
+	fb = drm_fb_get_from_bo(next_bo);
+	if (!fb) {
+		fprintf(stderr, "Failed to get a new framebuffer BO\n");
+		return -1;
 	}
 
-	while (1) {
-		struct gbm_bo *next_bo;
-		int waiting_for_flip = 1;
+	/*
+	 * Here you could also update drm plane layers if you want
+	 * hw composition
+	 */
 
-		egl->draw(i++);
-
-		eglSwapBuffers(egl->display, egl->surface);
-		next_bo = gbm_surface_lock_front_buffer(gbm->surface);
-		fb = drm_fb_get_from_bo(next_bo);
-		if (!fb) {
-			fprintf(stderr, "Failed to get a new framebuffer BO\n");
-			return -1;
-		}
-
-		/*
-		 * Here you could also update drm plane layers if you want
-		 * hw composition
-		 */
-
-		ret = drmModePageFlip(drm.fd, drm.crtc_id, fb->fb_id,
-				DRM_MODE_PAGE_FLIP_EVENT, &waiting_for_flip);
-		if (ret) {
-			printf("failed to queue page flip: %s\n", strerror(errno));
-			return -1;
-		}
-
-		while (waiting_for_flip) {
-			FD_ZERO(&fds);
-			FD_SET(0, &fds);
-			FD_SET(drm.fd, &fds);
-
-			ret = select(drm.fd + 1, &fds, NULL, NULL, NULL);
-			if (ret < 0) {
-				printf("select err: %s\n", strerror(errno));
-				return ret;
-			} else if (ret == 0) {
-				printf("select timeout!\n");
-				return -1;
-			} else if (FD_ISSET(0, &fds)) {
-				printf("user interrupted!\n");
-				return 0;
-			}
-			drmHandleEvent(drm.fd, &evctx);
-		}
-
-		/* release last buffer to render on again: */
-		gbm_surface_release_buffer(gbm->surface, bo);
-		bo = next_bo;
+	ret = drmModePageFlip(drm.fd, drm.crtc_id, fb->fb_id,
+			DRM_MODE_PAGE_FLIP_EVENT, &waiting_for_flip);
+	if (ret) {
+		printf("failed to queue page flip: %s\n", strerror(errno));
+		return -1;
 	}
 
-	return 0;
+	while (waiting_for_flip) {
+		FD_ZERO(&fds);
+		FD_SET(0, &fds);
+		FD_SET(drm.fd, &fds);
+
+		ret = select(drm.fd + 1, &fds, NULL, NULL, NULL);
+		if (ret < 0) {
+			printf("select err: %s\n", strerror(errno));
+			return ret;
+		} else if (ret == 0) {
+			printf("select timeout!\n");
+			return -1;
+		} else if (FD_ISSET(0, &fds)) {
+			printf("user interrupted!\n");
+			return 0;
+		}
+		drmHandleEvent(drm.fd, &evctx);
+	}
+
+	/* release last buffer to render on again: */
+	gbm_surface_release_buffer(gbm->surface, bo);
+	bo = next_bo;
+    
+    return 0;
 }
 
 
@@ -345,12 +452,8 @@ const struct drm * init_drm_legacy(const char *device)
 	if (ret)
 		return NULL;
 
-	drm.run = legacy_run;
-
 	return &drm;
 }
-
-static struct gbm gbm;
 
 WEAK struct gbm_surface *
 gbm_surface_create_with_modifiers(struct gbm_device *gbm,
@@ -505,20 +608,28 @@ JNIEXPORT jboolean JNICALL Java_com_sun_glass_ui_monocle_EGL_eglSwapBuffers
     }
 }
 
+JNIEXPORT jboolean JNICALL Java_com_sun_glass_ui_monocle_EGL_drmInitBuffers
+    (JNIEnv *UNUSED(env), jclass UNUSED(clazz), jlong eglDisplay, jlong eglSurface) {
+    if (legacy_init_surface(&gbm, asPtr(eglDisplay), asPtr(eglSurface)) == 0) {
+        return JNI_TRUE;
+    } else {
+        return JNI_FALSE;
+    }
+}
+
+
+JNIEXPORT jboolean JNICALL Java_com_sun_glass_ui_monocle_EGL_drmSwapBuffers
+    (JNIEnv *UNUSED(env), jclass UNUSED(clazz), jlong eglDisplay, jlong eglSurface) {
+    if (legacy_flip(&gbm, asPtr(eglDisplay), asPtr(eglSurface)) == 0) {
+        return JNI_TRUE;
+    } else {
+        return JNI_FALSE;
+    }
+}
+
 JNIEXPORT jint  JNICALL Java_com_sun_glass_ui_monocle_EGL_eglGetError
     (JNIEnv *UNUSED(env), jclass UNUSED(clazz)) {
     return (jint)eglGetError();
 }
-
-
-
-
-
-
-
-
-
-
-
 
 
