@@ -314,7 +314,16 @@ static int legacy_flip(const struct gbm *gbm, EGLDisplay display, EGLSurface sur
 	 * Here you could also update drm plane layers if you want
 	 * hw composition
 	 */
-
+    
+    // Single buffered
+    ret = drmModeSetCrtc(drm.fd, drm.crtc_id, fb->fb_id, 0, 0,
+			&drm.connector_id, 1, drm.mode);
+	if (ret) {
+		printf("failed to set mode: %s\n", strerror(errno));
+	}
+	
+	// Double buffered
+/*
 	ret = drmModePageFlip(drm.fd, drm.crtc_id, fb->fb_id,
 			DRM_MODE_PAGE_FLIP_EVENT, &waiting_for_flip);
 	if (ret) {
@@ -340,7 +349,7 @@ static int legacy_flip(const struct gbm *gbm, EGLDisplay display, EGLSurface sur
 		}
 		drmHandleEvent(drm.fd, &evctx);
 	}
-
+*/
 	/* release last buffer to render on again: */
 	gbm_surface_release_buffer(gbm->surface, bo);
 	bo = next_bo;
