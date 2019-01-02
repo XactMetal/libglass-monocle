@@ -83,14 +83,13 @@ JNIEXPORT jboolean JNICALL Java_com_sun_glass_ui_monocle_EGL_initDRM
     (JNIEnv *env, jclass UNUSED(clazz), jstring device) {
     
     const char *device_c = (*env)->GetStringUTFChars(env, device, 0);
-    printf("%s", device_c);
+    printf("Init DRM %s\n", device_c);
     
-    static const struct drm *drm;
-    drm = init_drm_legacy(device_c);
+    int ret = init_drm(&drm, device_c);
     
     (*env)->ReleaseStringUTFChars(env, device, device_c);
     
-    if (!drm) {
+    if (ret) {
         printf("failed to initialize legacy DRM\n");
         return JNI_FALSE;
     }
@@ -442,17 +441,6 @@ int init_drm(struct drm *drm, const char *device)
 	drm->connector_id = connector->connector_id;
 
 	return 0;
-}
-
-const struct drm * init_drm_legacy(const char *device)
-{
-	int ret;
-
-	ret = init_drm(&drm, device);
-	if (ret)
-		return NULL;
-
-	return &drm;
 }
 
 WEAK struct gbm_surface *

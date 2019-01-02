@@ -25,6 +25,8 @@
 
 package com.sun.glass.ui.monocle;
 
+import java.io.File;
+
 /** AcceleratedScreen provides methods necessary to instantiate and intitialize
  * a hardware-accelerated screen for rendering.
  */
@@ -70,12 +72,24 @@ public class AcceleratedScreen {
         initPlatformLibraries();
 
         int major[] = {0}, minor[]={0};
-
-        if (!egl.initDRM("/dev/dri/card1")) {
+        
+        boolean hasDRI = false;
+        File[] cards = new File("/dev/dri").listFiles();
+        System.out.println("Found " + cards.length + " cards");
+        for (File card : cards) {
+            System.out.println("Card " + card.getName());
+            
+            if (egl.initDRM(card.toString())) {
+                hasDRI = true;
+                break;
+            }
+        }
+        
+        if (!hasDRI) {
             throw new GLException(egl.eglGetError(),
                                  "Could not initialize DRM");
         }
-
+        
         if (!egl.initGBM()) {
             throw new GLException(egl.eglGetError(),
                                  "Could not initialize GBM");
