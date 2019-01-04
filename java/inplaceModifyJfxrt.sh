@@ -9,6 +9,8 @@ jar -uf /tmp/jfxrt.jar com/sun/glass/ui/monocle/EGL.class
 cp com/sun/glass/ui/monocle/EGL.class bin/com/sun/glass/ui/monocle/EGL.class
 javac -cp bin/ com/sun/glass/ui/monocle/AcceleratedScreen.java
 jar -uf /tmp/jfxrt.jar com/sun/glass/ui/monocle/AcceleratedScreen.class
+javac -cp bin/ com/sun/glass/ui/monocle/LinuxStatefulMultiTouchProcessor.java
+jar -uf /tmp/jfxrt.jar com/sun/glass/ui/monocle/LinuxStatefulMultiTouchProcessor.class
 
 echo "Done"
 rm -R bin/
