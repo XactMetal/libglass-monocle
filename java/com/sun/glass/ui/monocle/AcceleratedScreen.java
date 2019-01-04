@@ -26,6 +26,12 @@
 package com.sun.glass.ui.monocle;
 
 import java.io.File;
+import java.util.concurrent.Callable;
+import java.util.concurrent.ExecutionException;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.Future;
+import java.util.concurrent.TimeUnit;
 
 /** AcceleratedScreen provides methods necessary to instantiate and intitialize
  * a hardware-accelerated screen for rendering.
@@ -42,6 +48,9 @@ public class AcceleratedScreen {
     protected static final LinuxSystem ls = LinuxSystem.getLinuxSystem();
     private EGL egl;
     long eglConfigs[] = {0};
+    
+    private Future<Boolean> drmSwapFuture = null;
+    final ExecutorService exService = Executors.newSingleThreadExecutor();
 
     private long[] context;
 
@@ -203,18 +212,30 @@ public class AcceleratedScreen {
      *
      * @return success or failure
      */
+    private Boolean wasRendering = false;
     public boolean swapBuffers() {
         boolean result = false;
         synchronized(NativeScreen.framebufferSwapLock) {
-            if (rendering) result = egl.drmSwapBuffers(eglDisplay, eglSurface);
-            else result = egl.eglSwapBuffers(eglDisplay, eglSurface);
+            if (wasRendering) {
+                try {
+                    if (drmSwapFuture != null) drmSwapFuture.get();
+                } catch (Exception e) {
+                    return false;
+                }
+            }
+            wasRendering = rendering;
+            result = egl.eglSwapBuffers(eglDisplay, eglSurface);
+            if (!result) return result;
+            if (rendering) {
+                drmSwapFuture = exService.submit(() -> egl.drmSwapBuffers(eglDisplay, eglSurface));
+            }
 // TODO this shouldn't happen. In case the surface is invalid, we need to have recreated it before this method is called
             //if (!result) {
             //    createSurface();
             //    result = egl.eglSwapBuffers(eglDisplay, eglSurface);
             //}
         }
-        return result;
+        return true;
 
     }
 

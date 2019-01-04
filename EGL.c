@@ -302,7 +302,7 @@ static int legacy_flip(const struct gbm *gbm, EGLDisplay display, EGLSurface sur
 
 	//egl->draw(i++);
 
-	eglSwapBuffers(display, surface);
+	//eglSwapBuffers(display, surface);
 	next_bo = gbm_surface_lock_front_buffer(gbm->surface);
 	fb = drm_fb_get_from_bo(next_bo);
 	if (!fb) {
