@@ -84,9 +84,9 @@ public class AcceleratedScreen {
         
         boolean hasDRI = false;
         File[] cards = new File("/dev/dri").listFiles();
-        System.out.println("Found " + cards.length + " cards");
+        //System.out.println("Found " + cards.length + " cards");
         for (File card : cards) {
-            System.out.println("Card " + card.getName());
+            //System.out.println("Card " + card.getName());
             
             if (egl.initDRM(card.toString())) {
                 hasDRI = true;
