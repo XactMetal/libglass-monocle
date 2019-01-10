@@ -37,6 +37,8 @@
 #include <string.h>
 #include <sys/select.h>
 
+#define X_E_DEBUG 0
+
 static struct drm drm;
 static struct gbm gbm;
 
@@ -83,14 +85,14 @@ JNIEXPORT jboolean JNICALL Java_com_sun_glass_ui_monocle_EGL_initDRM
     (JNIEnv *env, jclass UNUSED(clazz), jstring device) {
     
     const char *device_c = (*env)->GetStringUTFChars(env, device, 0);
-    printf("Init DRM %s\n", device_c);
+    if (X_E_DEBUG) printf("Init DRM %s\n", device_c);
     
     int ret = init_drm(&drm, device_c);
     
     (*env)->ReleaseStringUTFChars(env, device, device_c);
     
     if (ret) {
-        printf("failed to initialize legacy DRM\n");
+        if (X_E_DEBUG) printf("failed to initialize legacy DRM\n");
         return JNI_FALSE;
     }
     return JNI_TRUE;
@@ -104,7 +106,7 @@ JNIEXPORT jboolean JNICALL Java_com_sun_glass_ui_monocle_EGL_initGBM
 	gbm = init_gbm(drm.fd, (drm.mode)->hdisplay, (drm.mode)->vdisplay,
 			DRM_FORMAT_MOD_LINEAR);
     if (!gbm) {
-        printf("failed to initialize GBM\n");
+        if (X_E_DEBUG) printf("failed to initialize GBM\n");
         return JNI_FALSE;
     }
     return JNI_TRUE;
@@ -181,7 +183,7 @@ struct drm_fb * drm_fb_get_from_bo(struct gbm_bo *bo)
 
 		if (modifiers[0]) {
 			flags = DRM_MODE_FB_MODIFIERS;
-			printf("Using modifier %" PRIx64 "\n", modifiers[0]);
+			if (X_E_DEBUG) printf("Using modifier %" PRIx64 "\n", modifiers[0]);
 		}
 
 		ret = drmModeAddFB2WithModifiers(drm_fd, width, height,
@@ -191,7 +193,7 @@ struct drm_fb * drm_fb_get_from_bo(struct gbm_bo *bo)
 
 	if (ret) {
 		if (flags)
-			fprintf(stderr, "Modifiers failed!\n");
+			if (X_E_DEBUG) fprintf(stderr, "Modifiers failed!\n");
 
 		memcpy(handles, (uint32_t [4]){gbm_bo_get_handle(bo).u32,0,0,0}, 16);
 		memcpy(strides, (uint32_t [4]){gbm_bo_get_stride(bo),0,0,0}, 16);
@@ -201,7 +203,7 @@ struct drm_fb * drm_fb_get_from_bo(struct gbm_bo *bo)
 	}
 
 	if (ret) {
-		printf("failed to create fb: %s\n", strerror(errno));
+		if (X_E_DEBUG) printf("failed to create fb: %s\n", strerror(errno));
 		free(fb);
 		return NULL;
 	}
@@ -279,7 +281,7 @@ static int legacy_init_surface(const struct gbm *gbm, EGLDisplay display, EGLSur
 	bo = gbm_surface_lock_front_buffer(gbm->surface);
 	fb = drm_fb_get_from_bo(bo);
 	if (!fb) {
-		fprintf(stderr, "Failed to get a new framebuffer BO\n");
+		if (X_E_DEBUG) fprintf(stderr, "Failed to get a new framebuffer BO\n");
 		return -1;
 	}
 
@@ -287,7 +289,7 @@ static int legacy_init_surface(const struct gbm *gbm, EGLDisplay display, EGLSur
 	ret = drmModeSetCrtc(drm.fd, drm.crtc_id, fb->fb_id, 0, 0,
 			&drm.connector_id, 1, drm.mode);
 	if (ret) {
-		printf("failed to set mode: %s\n", strerror(errno));
+		if (X_E_DEBUG) printf("failed to set mode: %s\n", strerror(errno));
 	}
     return ret;
 }
@@ -306,7 +308,7 @@ static int legacy_flip(const struct gbm *gbm, EGLDisplay display, EGLSurface sur
 	next_bo = gbm_surface_lock_front_buffer(gbm->surface);
 	fb = drm_fb_get_from_bo(next_bo);
 	if (!fb) {
-		fprintf(stderr, "Failed to get a new framebuffer BO\n");
+		if (X_E_DEBUG) fprintf(stderr, "Failed to get a new framebuffer BO\n");
 		return -1;
 	}
 
@@ -319,7 +321,7 @@ static int legacy_flip(const struct gbm *gbm, EGLDisplay display, EGLSurface sur
     ret = drmModeSetCrtc(drm.fd, drm.crtc_id, fb->fb_id, 0, 0,
 			&drm.connector_id, 1, drm.mode);
 	if (ret) {
-		printf("failed to set mode: %s\n", strerror(errno));
+		if (X_E_DEBUG) printf("failed to set mode: %s\n", strerror(errno));
 	}
 	
 	// Double buffered
@@ -327,7 +329,7 @@ static int legacy_flip(const struct gbm *gbm, EGLDisplay display, EGLSurface sur
 	ret = drmModePageFlip(drm.fd, drm.crtc_id, fb->fb_id,
 			DRM_MODE_PAGE_FLIP_EVENT, &waiting_for_flip);
 	if (ret) {
-		printf("failed to queue page flip: %s\n", strerror(errno));
+		if (X_E_DEBUG) printf("failed to queue page flip: %s\n", strerror(errno));
 		return -1;
 	}
 
@@ -338,13 +340,13 @@ static int legacy_flip(const struct gbm *gbm, EGLDisplay display, EGLSurface sur
 
 		ret = select(drm.fd + 1, &fds, NULL, NULL, NULL);
 		if (ret < 0) {
-			printf("select err: %s\n", strerror(errno));
+			if (X_E_DEBUG) printf("select err: %s\n", strerror(errno));
 			return ret;
 		} else if (ret == 0) {
-			printf("select timeout!\n");
+			if (X_E_DEBUG) printf("select timeout!\n");
 			return -1;
 		} else if (FD_ISSET(0, &fds)) {
-			printf("user interrupted!\n");
+			if (X_E_DEBUG) printf("user interrupted!\n");
 			return 0;
 		}
 		drmHandleEvent(drm.fd, &evctx);
@@ -368,13 +370,13 @@ int init_drm(struct drm *drm, const char *device)
 	drm->fd = open(device, O_RDWR);
 
 	if (drm->fd < 0) {
-		printf("could not open drm device\n");
+		if (X_E_DEBUG) printf("could not open drm device\n");
 		return -1;
 	}
 
 	resources = drmModeGetResources(drm->fd);
 	if (!resources) {
-		printf("drmModeGetResources failed: %s\n", strerror(errno));
+		if (X_E_DEBUG) printf("drmModeGetResources failed: %s\n", strerror(errno));
 		return -1;
 	}
 
@@ -393,7 +395,7 @@ int init_drm(struct drm *drm, const char *device)
 		/* we could be fancy and listen for hotplug events and wait for
 		 * a connector..
 		 */
-		printf("no connected connector!\n");
+		if (X_E_DEBUG) printf("no connected connector!\n");
 		return -1;
 	}
 
@@ -413,7 +415,7 @@ int init_drm(struct drm *drm, const char *device)
 	}
 
 	if (!drm->mode) {
-		printf("could not find mode!\n");
+		if (X_E_DEBUG) printf("could not find mode!\n");
 		return -1;
 	}
 
@@ -431,7 +433,7 @@ int init_drm(struct drm *drm, const char *device)
 	} else {
 		uint32_t crtc_id = find_crtc_for_connector(drm, resources, connector);
 		if (crtc_id == 0) {
-			printf("no crtc found!\n");
+			if (X_E_DEBUG) printf("no crtc found!\n");
 			return -1;
 		}
 
@@ -474,7 +476,7 @@ const struct gbm * init_gbm(int drm_fd, int w, int h, uint64_t modifier)
 
 	if (!gbm.surface) {
 		if (modifier != DRM_FORMAT_MOD_LINEAR) {
-			fprintf(stderr, "Modifiers requested but support isn't available\n");
+			if (X_E_DEBUG) fprintf(stderr, "Modifiers requested but support isn't available\n");
 			return NULL;
 		}
 		gbm.surface = gbm_surface_create(gbm.dev, w, h,
@@ -484,7 +486,7 @@ const struct gbm * init_gbm(int drm_fd, int w, int h, uint64_t modifier)
 	}
 
 	if (!gbm.surface) {
-		printf("failed to create gbm surface\n");
+		if (X_E_DEBUG) printf("failed to create gbm surface\n");
 		return NULL;
 	}
 
