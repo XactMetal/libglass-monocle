@@ -484,10 +484,14 @@ static int legacy_init_surface(const struct gbm *gbm, EGLDisplay display, EGLSur
 	}
     return ret;
 }
+
+static EGLSyncKHR gpu_fence = NULL;   /* out-fence from gpu, in-fence to kms */
+static EGLSyncKHR kms_fence = NULL;   /* in-fence to gpu, out-fence from kms */
+
 static int atomic_init_surface(const struct gbm *gbm, EGLDisplay display, EGLSurface surface)
 {
-	uint32_t i = 0;
-	uint32_t flags = DRM_MODE_ATOMIC_NONBLOCK;
+	/* Allow a modeset change for the first commit only. */
+	uint32_t flags = DRM_MODE_ATOMIC_NONBLOCK | DRM_MODE_ATOMIC_ALLOW_MODESET;
 	int ret;
 
 	if (egl_check(eglDupNativeFenceFDANDROID) ||
@@ -497,12 +501,7 @@ static int atomic_init_surface(const struct gbm *gbm, EGLDisplay display, EGLSur
 	    egl_check(eglClientWaitSyncKHR))
 		return -1;
 
-	/* Allow a modeset change for the first commit only. */
-	flags |= DRM_MODE_ATOMIC_ALLOW_MODESET;
-
 		struct gbm_bo *next_bo;
-		EGLSyncKHR gpu_fence = NULL;   /* out-fence from gpu, in-fence to kms */
-		EGLSyncKHR kms_fence = NULL;   /* in-fence to gpu, out-fence from kms */
 
 		if (drm.kms_out_fence_fd != -1) {
 			kms_fence = create_fence(display, drm.kms_out_fence_fd);
@@ -580,10 +579,7 @@ static int atomic_init_surface(const struct gbm *gbm, EGLDisplay display, EGLSur
 		if (bo)
 			gbm_surface_release_buffer(gbm->surface, bo);
 		bo = next_bo;
-
-		/* Allow a modeset change for the first commit only. */
-		flags &= ~(DRM_MODE_ATOMIC_ALLOW_MODESET);
-	
+	 if (X_E_DEBUG) printf("Done atomic init surface\n");
 
 	return ret;
 }
@@ -714,21 +710,11 @@ static int legacy_flip(const struct gbm *gbm, EGLDisplay display, EGLSurface sur
     return 0;
 }
 
+static int swapIdx = 0, flipIdx = 0;
 static int doSwapBuffers(EGLDisplay display, EGLSurface surface) {
-    return eglSwapBuffers(display, surface);
-}
-
-static int atomic_flip(const struct gbm *gbm, EGLDisplay display, EGLSurface surface)
-{
-	uint32_t i = 0;
-	uint32_t flags = DRM_MODE_ATOMIC_NONBLOCK;
-	int ret;
     
-		struct gbm_bo *next_bo;
-		EGLSyncKHR gpu_fence = NULL;   /* out-fence from gpu, in-fence to kms */
-		EGLSyncKHR kms_fence = NULL;   /* in-fence to gpu, out-fence from kms */
-
-		if (drm.kms_out_fence_fd != -1) {
+    // This part is in the wrong spot; should be pre-egl drawing
+    if (drm.kms_out_fence_fd != -1) {
 			kms_fence = create_fence(display, drm.kms_out_fence_fd);
 			assert(kms_fence);
 
@@ -742,6 +728,23 @@ static int atomic_flip(const struct gbm *gbm, EGLDisplay display, EGLSurface sur
 			 */
 			eglWaitSyncKHR(display, kms_fence, 0);
 		}
+    
+    // Swap buffers with fence
+    gpu_fence = create_fence(display, EGL_NO_NATIVE_FENCE_FD_ANDROID);
+    assert(gpu_fence);
+    //printf("Swp%d\n", swapIdx++);
+    int ret = eglSwapBuffers(display, surface);
+    return ret;
+}
+		
+static int atomic_flip(const struct gbm *gbm, EGLDisplay display, EGLSurface surface)
+{
+	uint32_t flags = DRM_MODE_ATOMIC_NONBLOCK;
+	int ret;
+    
+		struct gbm_bo *next_bo;
+
+   // printf("Tlp%d\n", swapIdx++);
 
 		// TODO
 		//egl->draw(i++);
@@ -749,11 +752,9 @@ static int atomic_flip(const struct gbm *gbm, EGLDisplay display, EGLSurface sur
 		/* insert fence to be singled in cmdstream.. this fence will be
 		 * signaled when gpu rendering done
 		 */
-		gpu_fence = create_fence(display, EGL_NO_NATIVE_FENCE_FD_ANDROID);
-		assert(gpu_fence);
 
-        // TODO
-		eglSwapBuffers(display, surface);
+        // Happens in java
+		//doSwapBuffers(display, surface);
 
 		/* after swapbuffers, gpu_fence should be flushed, so safe
 		 * to get fd:
@@ -805,7 +806,8 @@ static int atomic_flip(const struct gbm *gbm, EGLDisplay display, EGLSurface sur
 		if (bo)
 			gbm_surface_release_buffer(gbm->surface, bo);
 		bo = next_bo;
-
+        
+    //printf("Flp%d\n", flipIdx++);
 	return ret;
 }
 
