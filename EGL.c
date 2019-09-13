@@ -584,7 +584,8 @@ static int atomic_init_surface(const struct gbm *gbm, EGLDisplay display, EGLSur
 	return ret;
 }
 static const struct drm * suppliment_atomic() {
-	uint32_t plane_id;
+	int32_t plane_id = -EINVAL;
+	int32_t aux_plane_id = -EINVAL;
 	int ret;
 
 	ret = drmSetClientCap(drm.fd, DRM_CLIENT_CAP_ATOMIC, 1);
@@ -593,12 +594,10 @@ static const struct drm * suppliment_atomic() {
 		return NULL;
 	}
 
-	ret = get_plane_id();
-	if (!ret) {
+	get_plane_id(&plane_id, &aux_plane_id);
+	if (plane_id == -EINVAL) {
 		if (X_E_DEBUG) printf("could not find a suitable plane\n");
 		return NULL;
-	} else {
-		plane_id = ret;
 	}
 
 	/* We only do single plane to single crtc to single connector, no
@@ -920,21 +919,22 @@ int init_drm(struct drm *drm, const char *device, const int32_t prefW, const int
  * Seems like there is some room for a drmModeObjectGetNamedProperty()
  * type helper in libdrm..
  */
-static int get_plane_id(void)
+static void get_plane_id(int32_t *primaryPlane, int32_t *auxPlane)
 {
 	drmModePlaneResPtr plane_resources;
 	uint32_t i, j;
-	int ret = -EINVAL;
-	int found_primary = 0;
-
+    
 	plane_resources = drmModeGetPlaneResources(drm.fd);
 	if (!plane_resources) {
 		printf("drmModeGetPlaneResources failed: %s\n", strerror(errno));
-		return -1;
+		return;
 	}
 
-	for (i = 0; (i < plane_resources->count_planes) && !found_primary; i++) {
+    printf("drmModeGetPlane counts %u\n", plane_resources->count_planes);
+    
+	for (i = 0; (i < plane_resources->count_planes) && !(*primaryPlane != -EINVAL && *auxPlane != -EINVAL); i++) {
 		uint32_t id = plane_resources->planes[i];
+        printf("drmModeGetPlane(%u)\n", id);
 		drmModePlanePtr plane = drmModeGetPlane(drm.fd, id);
 		if (!plane) {
 			printf("drmModeGetPlane(%u) failed: %s\n", id, strerror(errno));
@@ -945,9 +945,6 @@ static int get_plane_id(void)
 			drmModeObjectPropertiesPtr props =
 				drmModeObjectGetProperties(drm.fd, id, DRM_MODE_OBJECT_PLANE);
 
-			/* primary or not, this plane is good enough to use: */
-			ret = id;
-
 			for (j = 0; j < props->count_props; j++) {
 				drmModePropertyPtr p =
 					drmModeGetProperty(drm.fd, props->props[j]);
@@ -955,7 +952,18 @@ static int get_plane_id(void)
 				if ((strcmp(p->name, "type") == 0) &&
 						(props->prop_values[j] == DRM_PLANE_TYPE_PRIMARY)) {
 					/* found our primary plane, lets use that: */
-					found_primary = 1;
+					*primaryPlane = id;
+                    printf("drmModeGetPlane found primary plane\n");
+				} else if ((strcmp(p->name, "type") == 0) &&
+						(props->prop_values[j] == DRM_PLANE_TYPE_OVERLAY)) {
+					/* found our overlay plane, lets use that: */
+                    if (*primaryPlane != -EINVAL) {
+                        *auxPlane = id;
+                    } else {
+                        *primaryPlane = id;
+                    }
+					
+                    printf("drmModeGetPlane found aux plane\n");
 				}
 
 				drmModeFreeProperty(p);
@@ -969,7 +977,7 @@ static int get_plane_id(void)
 
 	drmModeFreePlaneResources(plane_resources);
 
-	return ret;
+	return;
 }
 
 
