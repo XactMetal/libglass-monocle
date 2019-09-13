@@ -29,6 +29,8 @@
 #include "Monocle.h"
 #include "kms_common.h"
 
+#include <assert.h>
+#include <unistd.h>
 #include <stdlib.h>
 #include <stdio.h>
 #include <errno.h>
@@ -39,8 +41,189 @@
 
 #define X_E_DEBUG 1
 
-static struct drm drm;
+//   PFNEGLGETPLATFORMDISPLAYEXTPROC eglGetPlatformDisplayEXT;
+	PFNEGLCREATEIMAGEKHRPROC eglCreateImageKHR;
+	PFNEGLDESTROYIMAGEKHRPROC eglDestroyImageKHR;
+	PFNGLEGLIMAGETARGETTEXTURE2DOESPROC glEGLImageTargetTexture2DOES;
+	PFNEGLCREATESYNCKHRPROC eglCreateSyncKHR;
+	PFNEGLDESTROYSYNCKHRPROC eglDestroySyncKHR;
+	PFNEGLWAITSYNCKHRPROC eglWaitSyncKHR;
+	PFNEGLCLIENTWAITSYNCKHRPROC eglClientWaitSyncKHR;
+	PFNEGLDUPNATIVEFENCEFDANDROIDPROC eglDupNativeFenceFDANDROID;
+    
+static bool has_ext(const char *extension_list, const char *ext)
+{
+	const char *ptr = extension_list;
+	int len = strlen(ext);
+
+	if (ptr == NULL || *ptr == '\0')
+		return false;
+
+	while (true) {
+		ptr = strstr(ptr, ext);
+		if (!ptr)
+			return false;
+
+		if (ptr[len] == ' ' || ptr[len] == '\0')
+			return true;
+
+		ptr += len;
+	}
+}
+
+static inline int __egl_check(void *ptr, const char *name)
+{
+	if (!ptr) {
+		printf("no %s\n", name);
+		return -1;
+	}
+	return 0;
+}
+
+#define egl_check(name) __egl_check(name, #name)
+
+static struct drm drm= {
+	.kms_out_fence_fd = -1,
+};
 static struct gbm gbm;
+
+#define VOID2U64(x) ((uint64_t)(unsigned long)(x))
+
+static int add_connector_property(drmModeAtomicReq *req, uint32_t obj_id,
+					const char *name, uint64_t value)
+{
+	struct connector *obj = drm.connector;
+	unsigned int i;
+	int prop_id = 0;
+
+	for (i = 0 ; i < obj->props->count_props ; i++) {
+		if (strcmp(obj->props_info[i]->name, name) == 0) {
+			prop_id = obj->props_info[i]->prop_id;
+			break;
+		}
+	}
+
+	if (prop_id < 0) {
+		printf("no connector property: %s\n", name);
+		return -EINVAL;
+	}
+
+	return drmModeAtomicAddProperty(req, obj_id, prop_id, value);
+}
+
+static int add_crtc_property(drmModeAtomicReq *req, uint32_t obj_id,
+				const char *name, uint64_t value)
+{
+	struct crtc *obj = drm.crtc;
+	unsigned int i;
+	int prop_id = -1;
+
+	for (i = 0 ; i < obj->props->count_props ; i++) {
+		if (strcmp(obj->props_info[i]->name, name) == 0) {
+			prop_id = obj->props_info[i]->prop_id;
+			break;
+		}
+	}
+
+	if (prop_id < 0) {
+		printf("no crtc property: %s\n", name);
+		return -EINVAL;
+	}
+
+	return drmModeAtomicAddProperty(req, obj_id, prop_id, value);
+}
+
+static int add_plane_property(drmModeAtomicReq *req, uint32_t obj_id,
+				const char *name, uint64_t value)
+{
+	struct plane *obj = drm.plane;
+	unsigned int i;
+	int prop_id = -1;
+
+	for (i = 0 ; i < obj->props->count_props ; i++) {
+		if (strcmp(obj->props_info[i]->name, name) == 0) {
+			prop_id = obj->props_info[i]->prop_id;
+			break;
+		}
+	}
+
+
+	if (prop_id < 0) {
+		printf("no plane property: %s\n", name);
+		return -EINVAL;
+	}
+
+	return drmModeAtomicAddProperty(req, obj_id, prop_id, value);
+}
+
+static int drm_atomic_commit(uint32_t fb_id, uint32_t flags)
+{
+	drmModeAtomicReq *req;
+	uint32_t plane_id = drm.plane->plane->plane_id;
+	uint32_t blob_id;
+	int ret;
+
+	req = drmModeAtomicAlloc();
+
+	if (flags & DRM_MODE_ATOMIC_ALLOW_MODESET) {
+		if (add_connector_property(req, drm.connector_id, "CRTC_ID",
+						drm.crtc_id) < 0)
+				return -1;
+
+		if (drmModeCreatePropertyBlob(drm.fd, drm.mode, sizeof(*drm.mode),
+					      &blob_id) != 0)
+			return -1;
+
+		if (add_crtc_property(req, drm.crtc_id, "MODE_ID", blob_id) < 0)
+			return -1;
+
+		if (add_crtc_property(req, drm.crtc_id, "ACTIVE", 1) < 0)
+			return -1;
+	}
+
+	add_plane_property(req, plane_id, "FB_ID", fb_id);
+	add_plane_property(req, plane_id, "CRTC_ID", drm.crtc_id);
+	add_plane_property(req, plane_id, "SRC_X", 0);
+	add_plane_property(req, plane_id, "SRC_Y", 0);
+	add_plane_property(req, plane_id, "SRC_W", drm.mode->hdisplay << 16);
+	add_plane_property(req, plane_id, "SRC_H", drm.mode->vdisplay << 16);
+	add_plane_property(req, plane_id, "CRTC_X", 0);
+	add_plane_property(req, plane_id, "CRTC_Y", 0);
+	add_plane_property(req, plane_id, "CRTC_W", drm.mode->hdisplay);
+	add_plane_property(req, plane_id, "CRTC_H", drm.mode->vdisplay);
+
+	if (drm.kms_in_fence_fd != -1) {
+		add_crtc_property(req, drm.crtc_id, "OUT_FENCE_PTR",
+				VOID2U64(&drm.kms_out_fence_fd));
+		add_plane_property(req, plane_id, "IN_FENCE_FD", drm.kms_in_fence_fd);
+	}
+
+	ret = drmModeAtomicCommit(drm.fd, req, flags, NULL);
+	if (ret)
+		goto out;
+
+	if (drm.kms_in_fence_fd != -1) {
+		close(drm.kms_in_fence_fd);
+		drm.kms_in_fence_fd = -1;
+	}
+
+out:
+	drmModeAtomicFree(req);
+
+	return ret;
+}
+
+static EGLSyncKHR create_fence(EGLDisplay display, int fd)
+{
+	EGLint attrib_list[] = {
+		EGL_SYNC_NATIVE_FENCE_FD_ANDROID, fd,
+		EGL_NONE,
+	};
+	EGLSyncKHR fence = eglCreateSyncKHR(display,
+			EGL_SYNC_NATIVE_FENCE_ANDROID, attrib_list);
+	assert(fence);
+	return fence;
+}
 
 void setEGLAttrs(jint *attrs, int *eglAttrs) {
     int index = 0;
@@ -301,6 +484,109 @@ static int legacy_init_surface(const struct gbm *gbm, EGLDisplay display, EGLSur
 	}
     return ret;
 }
+static int atomic_init_surface(const struct gbm *gbm, EGLDisplay display, EGLSurface surface)
+{
+	uint32_t i = 0;
+	uint32_t flags = DRM_MODE_ATOMIC_NONBLOCK;
+	int ret;
+
+	if (egl_check(eglDupNativeFenceFDANDROID) ||
+	    egl_check(eglCreateSyncKHR) ||
+	    egl_check(eglDestroySyncKHR) ||
+	    egl_check(eglWaitSyncKHR) ||
+	    egl_check(eglClientWaitSyncKHR))
+		return -1;
+
+	/* Allow a modeset change for the first commit only. */
+	flags |= DRM_MODE_ATOMIC_ALLOW_MODESET;
+
+		struct gbm_bo *next_bo;
+		EGLSyncKHR gpu_fence = NULL;   /* out-fence from gpu, in-fence to kms */
+		EGLSyncKHR kms_fence = NULL;   /* in-fence to gpu, out-fence from kms */
+
+		if (drm.kms_out_fence_fd != -1) {
+			kms_fence = create_fence(display, drm.kms_out_fence_fd);
+			assert(kms_fence);
+
+			/* driver now has ownership of the fence fd: */
+			drm.kms_out_fence_fd = -1;
+
+			/* wait "on the gpu" (ie. this won't necessarily block, but
+			 * will block the rendering until fence is signaled), until
+			 * the previous pageflip completes so we don't render into
+			 * the buffer that is still on screen.
+			 */
+			eglWaitSyncKHR(display, kms_fence, 0);
+		}
+
+		// TODO
+		//draw(i++);
+
+		/* insert fence to be singled in cmdstream.. this fence will be
+		 * signaled when gpu rendering done
+		 */
+		gpu_fence = create_fence(display, EGL_NO_NATIVE_FENCE_FD_ANDROID);
+		assert(gpu_fence);
+
+		eglSwapBuffers(display, surface);
+
+		/* after swapbuffers, gpu_fence should be flushed, so safe
+		 * to get fd:
+		 */
+		drm.kms_in_fence_fd = eglDupNativeFenceFDANDROID(display, gpu_fence);
+		eglDestroySyncKHR(display, gpu_fence);
+		assert(drm.kms_in_fence_fd != -1);
+
+		next_bo = gbm_surface_lock_front_buffer(gbm->surface);
+		if (!next_bo) {
+			printf("Failed to lock frontbuffer\n");
+			return -1;
+		}
+		fb = drm_fb_get_from_bo(next_bo);
+		if (!fb) {
+			printf("Failed to get a new framebuffer BO\n");
+			return -1;
+		}
+
+		if (kms_fence) {
+			EGLint status;
+
+			/* Wait on the CPU side for the _previous_ commit to
+			 * complete before we post the flip through KMS, as
+			 * atomic will reject the commit if we post a new one
+			 * whilst the previous one is still pending.
+			 */
+			do {
+				status = eglClientWaitSyncKHR(display,
+								   kms_fence,
+								   0,
+								   EGL_FOREVER_KHR);
+			} while (status != EGL_CONDITION_SATISFIED_KHR);
+
+			eglDestroySyncKHR(display, kms_fence);
+		}
+
+		/*
+		 * Here you could also update drm plane layers if you want
+		 * hw composition
+		 */
+		ret = drm_atomic_commit(fb->fb_id, flags);
+		if (ret) {
+			printf("failed to commit: %s\n", strerror(errno));
+			return -1;
+		}
+
+		/* release last buffer to render on again: */
+		if (bo)
+			gbm_surface_release_buffer(gbm->surface, bo);
+		bo = next_bo;
+
+		/* Allow a modeset change for the first commit only. */
+		flags &= ~(DRM_MODE_ATOMIC_ALLOW_MODESET);
+	
+
+	return ret;
+}
 static const struct drm * suppliment_atomic() {
 	uint32_t plane_id;
 	int ret;
@@ -426,6 +712,101 @@ static int legacy_flip(const struct gbm *gbm, EGLDisplay display, EGLSurface sur
 	bo = next_bo;
     
     return 0;
+}
+
+static int doSwapBuffers(EGLDisplay display, EGLSurface surface) {
+    return eglSwapBuffers(display, surface);
+}
+
+static int atomic_flip(const struct gbm *gbm, EGLDisplay display, EGLSurface surface)
+{
+	uint32_t i = 0;
+	uint32_t flags = DRM_MODE_ATOMIC_NONBLOCK;
+	int ret;
+    
+		struct gbm_bo *next_bo;
+		EGLSyncKHR gpu_fence = NULL;   /* out-fence from gpu, in-fence to kms */
+		EGLSyncKHR kms_fence = NULL;   /* in-fence to gpu, out-fence from kms */
+
+		if (drm.kms_out_fence_fd != -1) {
+			kms_fence = create_fence(display, drm.kms_out_fence_fd);
+			assert(kms_fence);
+
+			/* driver now has ownership of the fence fd: */
+			drm.kms_out_fence_fd = -1;
+
+			/* wait "on the gpu" (ie. this won't necessarily block, but
+			 * will block the rendering until fence is signaled), until
+			 * the previous pageflip completes so we don't render into
+			 * the buffer that is still on screen.
+			 */
+			eglWaitSyncKHR(display, kms_fence, 0);
+		}
+
+		// TODO
+		//egl->draw(i++);
+
+		/* insert fence to be singled in cmdstream.. this fence will be
+		 * signaled when gpu rendering done
+		 */
+		gpu_fence = create_fence(display, EGL_NO_NATIVE_FENCE_FD_ANDROID);
+		assert(gpu_fence);
+
+        // TODO
+		eglSwapBuffers(display, surface);
+
+		/* after swapbuffers, gpu_fence should be flushed, so safe
+		 * to get fd:
+		 */
+		drm.kms_in_fence_fd = eglDupNativeFenceFDANDROID(display, gpu_fence);
+		eglDestroySyncKHR(display, gpu_fence);
+		assert(drm.kms_in_fence_fd != -1);
+
+		next_bo = gbm_surface_lock_front_buffer(gbm->surface);
+		if (!next_bo) {
+			printf("Failed to lock frontbuffer\n");
+			return -1;
+		}
+		fb = drm_fb_get_from_bo(next_bo);
+		if (!fb) {
+			printf("Failed to get a new framebuffer BO\n");
+			return -1;
+		}
+
+		if (kms_fence) {
+			EGLint status;
+
+			/* Wait on the CPU side for the _previous_ commit to
+			 * complete before we post the flip through KMS, as
+			 * atomic will reject the commit if we post a new one
+			 * whilst the previous one is still pending.
+			 */
+			do {
+				status = eglClientWaitSyncKHR(display,
+								   kms_fence,
+								   0,
+								   EGL_FOREVER_KHR);
+			} while (status != EGL_CONDITION_SATISFIED_KHR);
+
+			eglDestroySyncKHR(display, kms_fence);
+		}
+
+		/*
+		 * Here you could also update drm plane layers if you want
+		 * hw composition
+		 */
+		ret = drm_atomic_commit(fb->fb_id, flags);
+		if (ret) {
+			printf("failed to commit: %s\n", strerror(errno));
+			return -1;
+		}
+
+		/* release last buffer to render on again: */
+		if (bo)
+			gbm_surface_release_buffer(gbm->surface, bo);
+		bo = next_bo;
+
+	return ret;
 }
 
 
@@ -641,6 +1022,21 @@ JNIEXPORT jboolean JNICALL Java_com_sun_glass_ui_monocle_EGL_eglInitialize
     if (eglInitialize(asPtr(eglDisplay), &major, &minor)) {
          (*env)->SetIntArrayRegion(env, majorArray, 0, 1, &major);
          (*env)->SetIntArrayRegion(env, minorArray, 0, 1, &minor);
+    
+    const char *egl_exts_dpy;
+	egl_exts_dpy = eglQueryString(asPtr(eglDisplay), EGL_EXTENSIONS);
+    #define get_proc_dpy(ext, name) do { \
+		if (has_ext(egl_exts_dpy, #ext)) \
+			name = (void *)eglGetProcAddress(#name); \
+	} while (0)
+    get_proc_dpy(EGL_KHR_image_base, eglCreateImageKHR);
+	get_proc_dpy(EGL_KHR_image_base, eglDestroyImageKHR);
+	get_proc_dpy(EGL_KHR_fence_sync, eglCreateSyncKHR);
+	get_proc_dpy(EGL_KHR_fence_sync, eglDestroySyncKHR);
+	get_proc_dpy(EGL_KHR_fence_sync, eglWaitSyncKHR);
+	get_proc_dpy(EGL_KHR_fence_sync, eglClientWaitSyncKHR);
+	get_proc_dpy(EGL_ANDROID_native_fence_sync, eglDupNativeFenceFDANDROID);
+
         return JNI_TRUE;
     } else {
         return JNI_FALSE;
@@ -736,7 +1132,7 @@ JNIEXPORT jboolean JNICALL Java_com_sun_glass_ui_monocle_EGL_eglMakeCurrent
 
 JNIEXPORT jboolean JNICALL Java_com_sun_glass_ui_monocle_EGL_eglSwapBuffers
     (JNIEnv *UNUSED(env), jclass UNUSED(clazz), jlong eglDisplay, jlong eglSurface) {
-    if (eglSwapBuffers(asPtr(eglDisplay), asPtr(eglSurface))) {
+    if (doSwapBuffers(asPtr(eglDisplay), asPtr(eglSurface))) {
         return JNI_TRUE;
     } else {
         return JNI_FALSE;
@@ -745,7 +1141,7 @@ JNIEXPORT jboolean JNICALL Java_com_sun_glass_ui_monocle_EGL_eglSwapBuffers
 
 JNIEXPORT jboolean JNICALL Java_com_sun_glass_ui_monocle_EGL_drmInitBuffers
     (JNIEnv *UNUSED(env), jclass UNUSED(clazz), jlong eglDisplay, jlong eglSurface) {
-    if (legacy_init_surface(&gbm, asPtr(eglDisplay), asPtr(eglSurface)) == 0) {
+    if (atomic_init_surface(&gbm, asPtr(eglDisplay), asPtr(eglSurface)) == 0) {
         return JNI_TRUE;
     } else {
         return JNI_FALSE;
@@ -755,7 +1151,7 @@ JNIEXPORT jboolean JNICALL Java_com_sun_glass_ui_monocle_EGL_drmInitBuffers
 
 JNIEXPORT jboolean JNICALL Java_com_sun_glass_ui_monocle_EGL_drmSwapBuffers
     (JNIEnv *UNUSED(env), jclass UNUSED(clazz), jlong eglDisplay, jlong eglSurface) {
-    if (legacy_flip(&gbm, asPtr(eglDisplay), asPtr(eglSurface)) == 0) {
+    if (atomic_flip(&gbm, asPtr(eglDisplay), asPtr(eglSurface)) == 0) {
         return JNI_TRUE;
     } else {
         return JNI_FALSE;
