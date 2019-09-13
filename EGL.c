@@ -37,7 +37,7 @@
 #include <string.h>
 #include <sys/select.h>
 
-#define X_E_DEBUG 0
+#define X_E_DEBUG 1
 
 static struct drm drm;
 static struct gbm gbm;
@@ -93,6 +93,12 @@ JNIEXPORT jboolean JNICALL Java_com_sun_glass_ui_monocle_EGL_initDRM
     
     if (ret) {
         if (X_E_DEBUG) printf("failed to initialize legacy DRM\n");
+        return JNI_FALSE;
+    }
+   if (suppliment_atomic(drm, ret) == NULL) ret = 1;
+    
+    if (ret) {
+        if (X_E_DEBUG) printf("failed to initialize atomic DRM\n");
         return JNI_FALSE;
     }
     return JNI_TRUE;
@@ -168,6 +174,8 @@ struct drm_fb * drm_fb_get_from_bo(struct gbm_bo *bo)
 	height = gbm_bo_get_height(bo);
 	format = gbm_bo_get_format(bo);
 
+    const int num_planes = gbm_bo_get_plane_count(bo);
+    if (X_E_DEBUG) printf("Planes=%d\n", num_planes);
 	if (gbm_bo_get_modifier && gbm_bo_get_plane_count &&
 	    gbm_bo_get_stride_for_plane && gbm_bo_get_offset) {
 
@@ -293,12 +301,73 @@ static int legacy_init_surface(const struct gbm *gbm, EGLDisplay display, EGLSur
 	}
     return ret;
 }
+static const struct drm * suppliment_atomic() {
+	uint32_t plane_id;
+	int ret;
+
+	ret = drmSetClientCap(drm.fd, DRM_CLIENT_CAP_ATOMIC, 1);
+	if (ret) {
+		if (X_E_DEBUG) printf("no atomic modesetting support: %s\n", strerror(errno));
+		return NULL;
+	}
+
+	ret = get_plane_id();
+	if (!ret) {
+		if (X_E_DEBUG) printf("could not find a suitable plane\n");
+		return NULL;
+	} else {
+		plane_id = ret;
+	}
+
+	/* We only do single plane to single crtc to single connector, no
+	 * fancy multi-monitor or multi-plane stuff.  So just grab the
+	 * plane/crtc/connector property info for one of each:
+	 */
+	drm.plane = calloc(1, sizeof(*drm.plane));
+	drm.crtc = calloc(1, sizeof(*drm.crtc));
+	drm.connector = calloc(1, sizeof(*drm.connector));
+
+#define get_resource(type, Type, id) do { 					\
+		drm.type->type = drmModeGet##Type(drm.fd, id);			\
+		if (!drm.type->type) {						\
+			if (X_E_DEBUG) printf("could not get %s %i: %s\n",			\
+					#type, id, strerror(errno));		\
+			return NULL;						\
+		}								\
+	} while (0)
+
+	get_resource(plane, Plane, plane_id);
+	get_resource(crtc, Crtc, drm.crtc_id);
+	get_resource(connector, Connector, drm.connector_id);
+
+#define get_properties(type, TYPE, id) do {					\
+		uint32_t i;							\
+		drm.type->props = drmModeObjectGetProperties(drm.fd,		\
+				id, DRM_MODE_OBJECT_##TYPE);			\
+		if (!drm.type->props) {						\
+			if (X_E_DEBUG) printf("could not get %s %u properties: %s\n", 		\
+					#type, id, strerror(errno));		\
+			return NULL;						\
+		}								\
+		drm.type->props_info = calloc(drm.type->props->count_props,	\
+				sizeof(drm.type->props_info));			\
+		for (i = 0; i < drm.type->props->count_props; i++) {		\
+			drm.type->props_info[i] = drmModeGetProperty(drm.fd,	\
+					drm.type->props->props[i]);		\
+		}								\
+	} while (0)
+
+	get_properties(plane, PLANE, plane_id);
+	get_properties(crtc, CRTC, drm.crtc_id);
+	get_properties(connector, CONNECTOR, drm.connector_id);
+    
+    return &drm;
+}
 
 static int legacy_flip(const struct gbm *gbm, EGLDisplay display, EGLSurface surface)
 {
 	int ret;
 
-	
 	struct gbm_bo *next_bo;
 	int waiting_for_flip = 1;
 
@@ -460,6 +529,66 @@ int init_drm(struct drm *drm, const char *device, const int32_t prefW, const int
 
 	return 0;
 }
+
+
+/* Pick a plane.. something that at a minimum can be connected to
+ * the chosen crtc, but prefer primary plane.
+ *
+ * Seems like there is some room for a drmModeObjectGetNamedProperty()
+ * type helper in libdrm..
+ */
+static int get_plane_id(void)
+{
+	drmModePlaneResPtr plane_resources;
+	uint32_t i, j;
+	int ret = -EINVAL;
+	int found_primary = 0;
+
+	plane_resources = drmModeGetPlaneResources(drm.fd);
+	if (!plane_resources) {
+		printf("drmModeGetPlaneResources failed: %s\n", strerror(errno));
+		return -1;
+	}
+
+	for (i = 0; (i < plane_resources->count_planes) && !found_primary; i++) {
+		uint32_t id = plane_resources->planes[i];
+		drmModePlanePtr plane = drmModeGetPlane(drm.fd, id);
+		if (!plane) {
+			printf("drmModeGetPlane(%u) failed: %s\n", id, strerror(errno));
+			continue;
+		}
+
+		if (plane->possible_crtcs & (1 << drm.crtc_index)) {
+			drmModeObjectPropertiesPtr props =
+				drmModeObjectGetProperties(drm.fd, id, DRM_MODE_OBJECT_PLANE);
+
+			/* primary or not, this plane is good enough to use: */
+			ret = id;
+
+			for (j = 0; j < props->count_props; j++) {
+				drmModePropertyPtr p =
+					drmModeGetProperty(drm.fd, props->props[j]);
+
+				if ((strcmp(p->name, "type") == 0) &&
+						(props->prop_values[j] == DRM_PLANE_TYPE_PRIMARY)) {
+					/* found our primary plane, lets use that: */
+					found_primary = 1;
+				}
+
+				drmModeFreeProperty(p);
+			}
+
+			drmModeFreeObjectProperties(props);
+		}
+
+		drmModeFreePlane(plane);
+	}
+
+	drmModeFreePlaneResources(plane_resources);
+
+	return ret;
+}
+
 
 WEAK struct gbm_surface *
 gbm_surface_create_with_modifiers(struct gbm_device *gbm,
