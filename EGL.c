@@ -86,6 +86,7 @@ static struct drm drm= {
 	.kms_out_fence_fd = -1,
 };
 static struct gbm gbm;
+static struct gbm aux_gbm;
 
 #define VOID2U64(x) ((uint64_t)(unsigned long)(x))
 
@@ -156,10 +157,51 @@ static int add_plane_property(drmModeAtomicReq *req, uint32_t obj_id,
 	return drmModeAtomicAddProperty(req, obj_id, prop_id, value);
 }
 
-static int drm_atomic_commit(uint32_t fb_id, uint32_t flags)
+static int drm_plane_commit(uint32_t plane_id, uint32_t fb_id, uint32_t flags)
 {
 	drmModeAtomicReq *req;
-	uint32_t plane_id = drm.plane->plane->plane_id;
+	uint32_t blob_id;
+	int ret;
+
+	req = drmModeAtomicAlloc();
+
+	/*if (flags & DRM_MODE_ATOMIC_ALLOW_MODESET) {
+		if (add_connector_property(req, drm.connector_id, "CRTC_ID",
+						drm.crtc_id) < 0)
+				return -1;
+
+		if (drmModeCreatePropertyBlob(drm.fd, drm.mode, sizeof(*drm.mode),
+					      &blob_id) != 0)
+			return -1;
+
+		if (add_crtc_property(req, drm.crtc_id, "MODE_ID", blob_id) < 0)
+			return -1;
+
+		if (add_crtc_property(req, drm.crtc_id, "ACTIVE", 1) < 0)
+			return -1;
+	}*/
+
+	add_plane_property(req, plane_id, "FB_ID", fb_id);
+	add_plane_property(req, plane_id, "CRTC_ID", drm.crtc_id);
+	add_plane_property(req, plane_id, "SRC_X", 0);
+	add_plane_property(req, plane_id, "SRC_Y", 0);
+	add_plane_property(req, plane_id, "SRC_W", ((uint32_t)256) << 16);
+	add_plane_property(req, plane_id, "SRC_H", ((uint32_t)128) << 16);
+	add_plane_property(req, plane_id, "CRTC_X", 256);
+	add_plane_property(req, plane_id, "CRTC_Y", 128);
+	add_plane_property(req, plane_id, "CRTC_W", 256); // TODO
+	add_plane_property(req, plane_id, "CRTC_H", 128);
+
+	ret = drmModeAtomicCommit(drm.fd, req, flags, NULL);
+
+	drmModeAtomicFree(req);
+
+	return ret;
+}
+
+static int drm_atomic_commit(uint32_t plane_id, uint32_t fb_id, uint32_t flags)
+{
+	drmModeAtomicReq *req;
 	uint32_t blob_id;
 	int ret;
 
@@ -290,11 +332,11 @@ JNIEXPORT jboolean JNICALL Java_com_sun_glass_ui_monocle_EGL_initDRM
 JNIEXPORT jboolean JNICALL Java_com_sun_glass_ui_monocle_EGL_initGBM
     (JNIEnv *env, jclass UNUSED(clazz)) {
     
-    static const struct gbm *gbm;
+    static const struct gbm *gbm_ptr;
 
-	gbm = init_gbm(drm.fd, (drm.mode)->hdisplay, (drm.mode)->vdisplay,
+	gbm_ptr = init_gbm(&gbm, drm.fd, (drm.mode)->hdisplay, (drm.mode)->vdisplay,
 			DRM_FORMAT_MOD_LINEAR);
-    if (!gbm) {
+    if (!gbm_ptr) {
         if (X_E_DEBUG) printf("failed to initialize GBM\n");
         return JNI_FALSE;
     }
@@ -358,7 +400,6 @@ struct drm_fb * drm_fb_get_from_bo(struct gbm_bo *bo)
 	format = gbm_bo_get_format(bo);
 
     const int num_planes = gbm_bo_get_plane_count(bo);
-    if (X_E_DEBUG) printf("Planes=%d\n", num_planes);
 	if (gbm_bo_get_modifier && gbm_bo_get_plane_count &&
 	    gbm_bo_get_stride_for_plane && gbm_bo_get_offset) {
 
@@ -455,6 +496,8 @@ static void page_flip_handler(int fd, unsigned int frame,
 	*waiting_for_flip = 0;
 }
 
+static struct gbm_bo *aux_bo;
+static struct drm_fb *aux_fb;
 static struct gbm_bo *bo;
 static struct drm_fb *fb;
 static fd_set fds;
@@ -487,13 +530,22 @@ static int legacy_init_surface(const struct gbm *gbm, EGLDisplay display, EGLSur
 
 static EGLSyncKHR gpu_fence = NULL;   /* out-fence from gpu, in-fence to kms */
 static EGLSyncKHR kms_fence = NULL;   /* in-fence to gpu, out-fence from kms */
-
-static int atomic_init_surface(const struct gbm *gbm, EGLDisplay display, EGLSurface surface)
+static int atomic_init_surface(EGLDisplay display, EGLSurface surface)
 {
+    int ret;
+    
+    static const struct gbm *aux_gbm_ptr;
+    // AUX FRAMEBUFFER
+    aux_gbm_ptr = init_gbm2(gbm.dev, &aux_gbm, drm.fd, (drm.mode)->hdisplay, (drm.mode)->vdisplay,
+			DRM_FORMAT_MOD_LINEAR);
+    if (aux_gbm_ptr == NULL) {
+        printf("aux_gbm did not init\n"); // TODO
+    }
+    // END AUX FRAMEBUFFER
+    
 	/* Allow a modeset change for the first commit only. */
 	uint32_t flags = DRM_MODE_ATOMIC_NONBLOCK | DRM_MODE_ATOMIC_ALLOW_MODESET;
-	int ret;
-
+	
 	if (egl_check(eglDupNativeFenceFDANDROID) ||
 	    egl_check(eglCreateSyncKHR) ||
 	    egl_check(eglDestroySyncKHR) ||
@@ -536,7 +588,7 @@ static int atomic_init_surface(const struct gbm *gbm, EGLDisplay display, EGLSur
 		eglDestroySyncKHR(display, gpu_fence);
 		assert(drm.kms_in_fence_fd != -1);
 
-		next_bo = gbm_surface_lock_front_buffer(gbm->surface);
+		next_bo = gbm_surface_lock_front_buffer(gbm.surface);
 		if (!next_bo) {
 			printf("Failed to lock frontbuffer\n");
 			return -1;
@@ -565,20 +617,45 @@ static int atomic_init_surface(const struct gbm *gbm, EGLDisplay display, EGLSur
 			eglDestroySyncKHR(display, kms_fence);
 		}
 
-		/*
-		 * Here you could also update drm plane layers if you want
-		 * hw composition
-		 */
-		ret = drm_atomic_commit(fb->fb_id, flags);
+		ret = drm_atomic_commit(drm.plane->plane->plane_id, fb->fb_id, flags);
 		if (ret) {
 			printf("failed to commit: %s\n", strerror(errno));
 			return -1;
 		}
-
 		/* release last buffer to render on again: */
 		if (bo)
-			gbm_surface_release_buffer(gbm->surface, bo);
+			gbm_surface_release_buffer(gbm.surface, bo);
 		bo = next_bo;
+		
+        
+		/*
+		 * Here you could also update drm plane layers if you want
+		 * hw composition
+		 */
+
+        // And that's what I'm gonna do
+        aux_bo = gbm_surface_lock_front_buffer(aux_gbm.surface);
+        gbm_surface_release_buffer(aux_gbm.surface, aux_bo);
+        /*aux_fb = drm_fb_get_from_bo(aux_bo);
+        if (!aux_fb) {
+            if (X_E_DEBUG) fprintf(stderr, "Failed to get a new aux framebuffer BO\n");
+           // return -1;
+        }*/
+	   /* uint32_t auxplane_id = drm.auxplane->plane->plane_id;
+        ret = drmModeSetPlane(drm.fd, auxplane_id, aux_fb->fb_id,
+			   drm.crtc_id, 0, // Flags
+			   0, 0,  // crtc x, y
+			   256, 128, // crtc w, h
+			   0, 0,   // src x, y
+			   (uint32_t)256 << 16, (uint32_t)128 << 16);  // src w, h
+        
+		*/
+       /* ret = drm_plane_commit(drm.auxplane->plane->plane_id, aux_fb->fb_id, DRM_MODE_PAGE_FLIP_EVENT |    DRM_MODE_ATOMIC_NONBLOCK);
+        if (ret) {
+			printf("failed aux plane %d: %s\n", drm.auxplane->plane->plane_id, strerror(errno));
+			//return -1;
+		}*/
+
 	 if (X_E_DEBUG) printf("Done atomic init surface\n");
 
 	return ret;
@@ -587,6 +664,8 @@ static const struct drm * suppliment_atomic() {
 	int32_t plane_id = -EINVAL;
 	int32_t aux_plane_id = -EINVAL;
 	int ret;
+    
+    drm.auxplane = NULL;
 
 	ret = drmSetClientCap(drm.fd, DRM_CLIENT_CAP_ATOMIC, 1);
 	if (ret) {
@@ -605,42 +684,54 @@ static const struct drm * suppliment_atomic() {
 	 * plane/crtc/connector property info for one of each:
 	 */
 	drm.plane = calloc(1, sizeof(*drm.plane));
+	if (aux_plane_id != -EINVAL) {
+		if (X_E_DEBUG) printf("Found aux plane\n");
+		drm.auxplane = calloc(1, sizeof(*drm.auxplane));
+	}
 	drm.crtc = calloc(1, sizeof(*drm.crtc));
 	drm.connector = calloc(1, sizeof(*drm.connector));
 
-#define get_resource(type, Type, id) do { 					\
-		drm.type->type = drmModeGet##Type(drm.fd, id);			\
-		if (!drm.type->type) {						\
+#define get_resource(var, type, Type, id) do { 					\
+		drm.var->type = drmModeGet##Type(drm.fd, id);			\
+		if (!drm.var->type) {						\
 			if (X_E_DEBUG) printf("could not get %s %i: %s\n",			\
 					#type, id, strerror(errno));		\
 			return NULL;						\
 		}								\
 	} while (0)
 
-	get_resource(plane, Plane, plane_id);
-	get_resource(crtc, Crtc, drm.crtc_id);
-	get_resource(connector, Connector, drm.connector_id);
+	get_resource(plane, plane, Plane, plane_id);
+	if (aux_plane_id != -EINVAL) {
+		if (X_E_DEBUG) printf("Get aux plane rsrc\n");
+		get_resource(auxplane, plane, Plane, aux_plane_id);
+	}
+	get_resource(crtc, crtc, Crtc, drm.crtc_id);
+	get_resource(connector, connector, Connector, drm.connector_id);
 
-#define get_properties(type, TYPE, id) do {					\
+#define get_properties(var, type, TYPE, id) do {					\
 		uint32_t i;							\
-		drm.type->props = drmModeObjectGetProperties(drm.fd,		\
+		drm.var->props = drmModeObjectGetProperties(drm.fd,		\
 				id, DRM_MODE_OBJECT_##TYPE);			\
-		if (!drm.type->props) {						\
+		if (!drm.var->props) {						\
 			if (X_E_DEBUG) printf("could not get %s %u properties: %s\n", 		\
 					#type, id, strerror(errno));		\
 			return NULL;						\
 		}								\
-		drm.type->props_info = calloc(drm.type->props->count_props,	\
-				sizeof(drm.type->props_info));			\
-		for (i = 0; i < drm.type->props->count_props; i++) {		\
-			drm.type->props_info[i] = drmModeGetProperty(drm.fd,	\
-					drm.type->props->props[i]);		\
+		drm.var->props_info = calloc(drm.var->props->count_props,	\
+				sizeof(drm.var->props_info));			\
+		for (i = 0; i < drm.var->props->count_props; i++) {		\
+			drm.var->props_info[i] = drmModeGetProperty(drm.fd,	\
+					drm.var->props->props[i]);		\
 		}								\
 	} while (0)
 
-	get_properties(plane, PLANE, plane_id);
-	get_properties(crtc, CRTC, drm.crtc_id);
-	get_properties(connector, CONNECTOR, drm.connector_id);
+	get_properties(plane, plane, PLANE, plane_id);
+	if (aux_plane_id != -EINVAL) {
+		if (X_E_DEBUG) printf("Get aux plane props\n");
+		get_properties(auxplane, plane, PLANE, aux_plane_id);
+	}
+	get_properties(crtc, crtc, CRTC, drm.crtc_id);
+	get_properties(connector, connector, CONNECTOR, drm.connector_id);
     
     return &drm;
 }
@@ -736,7 +827,7 @@ static int doSwapBuffers(EGLDisplay display, EGLSurface surface) {
     return ret;
 }
 		
-static int atomic_flip(const struct gbm *gbm, EGLDisplay display, EGLSurface surface)
+static int atomic_flip(EGLDisplay display, EGLSurface surface)
 {
 	uint32_t flags = DRM_MODE_ATOMIC_NONBLOCK;
 	int ret;
@@ -762,7 +853,7 @@ static int atomic_flip(const struct gbm *gbm, EGLDisplay display, EGLSurface sur
 		eglDestroySyncKHR(display, gpu_fence);
 		assert(drm.kms_in_fence_fd != -1);
 
-		next_bo = gbm_surface_lock_front_buffer(gbm->surface);
+		next_bo = gbm_surface_lock_front_buffer(gbm.surface);
 		if (!next_bo) {
 			printf("Failed to lock frontbuffer\n");
 			return -1;
@@ -795,15 +886,38 @@ static int atomic_flip(const struct gbm *gbm, EGLDisplay display, EGLSurface sur
 		 * Here you could also update drm plane layers if you want
 		 * hw composition
 		 */
-		ret = drm_atomic_commit(fb->fb_id, flags);
+        
+		ret = drm_atomic_commit(drm.plane->plane->plane_id, fb->fb_id, flags);
 		if (ret) {
 			printf("failed to commit: %s\n", strerror(errno));
 			return -1;
 		}
-
+		
+		/*
+		aux_bo = gbm_surface_lock_front_buffer(aux_gbm.surface);
+        aux_fb = drm_fb_get_from_bo(aux_bo);
+        if (!aux_fb) {
+            if (X_E_DEBUG) fprintf(stderr, "Failed to get a new aux framebuffer BO\n");
+           // return -1;
+        }
+	    uint32_t auxplane_id = drm.auxplane->plane->plane_id;
+        ret = drmModeSetPlane(drm.fd, auxplane_id, aux_fb->fb_id,
+			   drm.crtc_id, 0, // Flags
+			   0, 0,  // crtc x, y
+			   256, 128, // crtc w, h
+			   0, 0,   // src x, y
+			   (uint32_t)256 << 16, (uint32_t)128 << 16);  // src w, h
+        
+		
+        ret = drm_plane_commit(drm.auxplane->plane->plane_id, aux_fb->fb_id, DRM_MODE_PAGE_FLIP_EVENT | DRM_MODE_ATOMIC_NONBLOCK);
+        if (ret) {
+			printf("failed aux plane %d: %s\n", drm.auxplane->plane->plane_id, strerror(errno));
+			//return -1;
+		}*/
+		
 		/* release last buffer to render on again: */
 		if (bo)
-			gbm_surface_release_buffer(gbm->surface, bo);
+			gbm_surface_release_buffer(gbm.surface, bo);
 		bo = next_bo;
         
     //printf("Flp%d\n", flipIdx++);
@@ -988,39 +1102,43 @@ gbm_surface_create_with_modifiers(struct gbm_device *gbm,
                                   const uint64_t *modifiers,
                                   const unsigned int count);
 
-const struct gbm * init_gbm(int drm_fd, int w, int h, uint64_t modifier)
+const struct gbm * init_gbm(struct gbm * gbm, int drm_fd, int w, int h, uint64_t modifier)
 {
-	gbm.dev = gbm_create_device(drm_fd);
-	gbm.format = GBM_FORMAT_XRGB8888;
-	gbm.surface = NULL;
+    return init_gbm2(gbm_create_device(drm_fd), gbm, drm_fd, w, h, modifier);
+}
+const struct gbm * init_gbm2(struct gbm_device *devv, struct gbm * gbm, int drm_fd, int w, int h, uint64_t modifier)
+{
+	gbm->dev = devv;
+	gbm->format = GBM_FORMAT_XRGB8888;
+	gbm->surface = NULL;
 
 	if (gbm_surface_create_with_modifiers) {
-		gbm.surface = gbm_surface_create_with_modifiers(gbm.dev, w, h,
-								gbm.format,
+		gbm->surface = gbm_surface_create_with_modifiers(gbm->dev, w, h,
+								gbm->format,
 								&modifier, 1);
 
 	}
 
-	if (!gbm.surface) {
+	if (!gbm->surface) {
 		if (modifier != DRM_FORMAT_MOD_LINEAR) {
 			if (X_E_DEBUG) fprintf(stderr, "Modifiers requested but support isn't available\n");
 			return NULL;
 		}
-		gbm.surface = gbm_surface_create(gbm.dev, w, h,
-						gbm.format,
+		gbm->surface = gbm_surface_create(gbm->dev, w, h,
+						gbm->format,
 						GBM_BO_USE_SCANOUT | GBM_BO_USE_RENDERING);
 
 	}
 
-	if (!gbm.surface) {
+	if (!gbm->surface) {
 		if (X_E_DEBUG) printf("failed to create gbm surface\n");
 		return NULL;
 	}
 
-	gbm.width = w;
-	gbm.height = h;
+	gbm->width = w;
+	gbm->height = h;
 
-	return &gbm;
+	return gbm;
 }
 
 //////////////////
@@ -1151,7 +1269,7 @@ JNIEXPORT jboolean JNICALL Java_com_sun_glass_ui_monocle_EGL_eglSwapBuffers
 
 JNIEXPORT jboolean JNICALL Java_com_sun_glass_ui_monocle_EGL_drmInitBuffers
     (JNIEnv *UNUSED(env), jclass UNUSED(clazz), jlong eglDisplay, jlong eglSurface) {
-    if (atomic_init_surface(&gbm, asPtr(eglDisplay), asPtr(eglSurface)) == 0) {
+    if (atomic_init_surface(asPtr(eglDisplay), asPtr(eglSurface)) == 0) {
         return JNI_TRUE;
     } else {
         return JNI_FALSE;
@@ -1161,7 +1279,7 @@ JNIEXPORT jboolean JNICALL Java_com_sun_glass_ui_monocle_EGL_drmInitBuffers
 
 JNIEXPORT jboolean JNICALL Java_com_sun_glass_ui_monocle_EGL_drmSwapBuffers
     (JNIEnv *UNUSED(env), jclass UNUSED(clazz), jlong eglDisplay, jlong eglSurface) {
-    if (atomic_flip(&gbm, asPtr(eglDisplay), asPtr(eglSurface)) == 0) {
+    if (atomic_flip(asPtr(eglDisplay), asPtr(eglSurface)) == 0) {
         return JNI_TRUE;
     } else {
         return JNI_FALSE;

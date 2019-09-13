@@ -53,6 +53,7 @@ struct drm {
 
 	/* only used for atomic: */
 	struct plane *plane;
+	struct plane *auxplane;
 	struct crtc *crtc;
 	struct connector *connector;
 	int crtc_index;
@@ -136,6 +137,15 @@ EGLAPI EGLSurface EGLAPIENTRY eglCreatePlatformPixmapSurfaceEXT (EGLDisplay dpy,
 #define EGL_DMA_BUF_PLANE3_MODIFIER_LO_EXT 0x3449
 #define EGL_DMA_BUF_PLANE3_MODIFIER_HI_EXT 0x344A
 #endif
+struct modeset_buf {
+	uint32_t width;
+	uint32_t height;
+	uint32_t stride;
+	uint32_t size;
+	uint32_t handle;
+	uint8_t *map;
+	uint32_t fb;
+};
 
 struct gbm {
 	struct gbm_device *dev;
@@ -144,7 +154,8 @@ struct gbm {
 	int width, height;
 };
 
-const struct gbm * init_gbm(int drm_fd, int w, int h, uint64_t modifier);
+const struct gbm * init_gbm2(struct gbm_device * dev, struct gbm * gbm, int drm_fd, int w, int h, uint64_t modifier);
+const struct gbm * init_gbm(struct gbm * gbm, int drm_fd, int w, int h, uint64_t modifier);
 
 int create_program(const char *vs_src, const char *fs_src);
 int link_program(unsigned program);
