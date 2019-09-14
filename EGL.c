@@ -29,6 +29,11 @@
 #include "Monocle.h"
 #include "kms_common.h"
 
+// SHARED MEM
+#include <sys/ipc.h> 
+#include <sys/shm.h> 
+#include <pthread.h> 
+
 #include <sys/ioctl.h>
 #include <assert.h>
 #include <unistd.h>
@@ -541,6 +546,19 @@ static EGLSyncKHR kms_fence = NULL;   /* in-fence to gpu, out-fence from kms */
 
 static uint32_t frame_buffer_id = 1000;
 static uint8_t * primed_framebuffer;
+
+
+// A normal C function that is executed as a thread  
+// when its name is specified in pthread_create() 
+void *cameraThread(void *vargp) 
+{ 
+    while (1) {
+        sleep(0.01);
+        int ret = drm_plane_commit(drm.auxplane->plane->plane_id, frame_buffer_id, 0);
+    }
+    return NULL; 
+} 
+
 static int atomic_init_surface(EGLDisplay display, EGLSurface surface)
 {
     int ret;
@@ -713,6 +731,14 @@ static int atomic_init_surface(EGLDisplay display, EGLSurface surface)
 			printf("failed aux plane %d: %d %d\n", drm.auxplane->plane->plane_id, ret, errno);
 			//return -1;
 		}
+		
+		
+   
+    pthread_t thread_id; 
+    printf("Init camera thread\n"); 
+    pthread_create(&thread_id, NULL, cameraThread, NULL); 
+    //pthread_join(thread_id, NULL); 
+    
 	 if (X_E_DEBUG) printf("Done atomic init surface\n");
 
 	return ret;
