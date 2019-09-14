@@ -158,6 +158,8 @@ static int add_plane_property(drmModeAtomicReq *req, uint32_t obj_id,
 	return drmModeAtomicAddProperty(req, obj_id, prop_id, value);
 }
 
+static int px = 0, py = 0;
+static int pxs = 2, pys = 2;
 static int drm_plane_commit(uint32_t plane_id, uint32_t fb_id, uint32_t flags)
 {
 	drmModeAtomicReq *req;
@@ -181,6 +183,13 @@ static int drm_plane_commit(uint32_t plane_id, uint32_t fb_id, uint32_t flags)
 		if (add_crtc_property(req, drm.crtc_id, "ACTIVE", 1) < 0)
 			return -1;
 	}*/
+    
+    px+=pxs;
+    py+=pys;
+    if (px >= 512 || px <= 0) pxs *= -1;
+    if (py >= 300 || py <= 0) pys *= -1;
+    px+=pxs;
+    py+=pys;
 
 	add_plane_property(req, plane_id, "FB_ID", fb_id);
 	add_plane_property(req, plane_id, "CRTC_ID", drm.crtc_id);
@@ -188,8 +197,8 @@ static int drm_plane_commit(uint32_t plane_id, uint32_t fb_id, uint32_t flags)
 	add_plane_property(req, plane_id, "SRC_Y", 0);
 	add_plane_property(req, plane_id, "SRC_W", ((uint32_t)512) << 16);
 	add_plane_property(req, plane_id, "SRC_H", ((uint32_t)300) << 16);
-	add_plane_property(req, plane_id, "CRTC_X", 0);
-	add_plane_property(req, plane_id, "CRTC_Y", 0);
+	add_plane_property(req, plane_id, "CRTC_X", px);
+	add_plane_property(req, plane_id, "CRTC_Y", py);
 	add_plane_property(req, plane_id, "CRTC_W", 512); // TODO
 	add_plane_property(req, plane_id, "CRTC_H", 300);
 
@@ -875,6 +884,7 @@ static int doSwapBuffers(EGLDisplay display, EGLSurface surface) {
     return ret;
 }
 		
+static int colordd = 0;
 static int atomic_flip(EGLDisplay display, EGLSurface surface)
 {
 	uint32_t flags = DRM_MODE_ATOMIC_NONBLOCK;
@@ -947,7 +957,10 @@ static int atomic_flip(EGLDisplay display, EGLSurface surface)
 		bo = next_bo;
         
         // Aux jawn
-        ret = drm_plane_commit(drm.auxplane->plane->plane_id, frame_buffer_id, 0);
+        for (uint_fast32_t p = 0; p < 30000; p++)
+			((uint32_t *) primed_framebuffer)[p] = colordd;
+        colordd = colordd == 254 ? 0 : colordd+1;
+        //ret = drm_plane_commit(drm.auxplane->plane->plane_id, frame_buffer_id, 0);
         
     //printf("Flp%d\n", flipIdx++);
 	return ret;
