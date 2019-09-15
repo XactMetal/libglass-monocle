@@ -53,7 +53,6 @@ struct drm {
 
 	/* only used for atomic: */
 	struct plane *plane;
-	struct plane *auxplane;
 	struct crtc *crtc;
 	struct connector *connector;
 	int crtc_index;
@@ -75,7 +74,7 @@ struct drm_fb {
 struct drm_fb * drm_fb_get_from_bo(struct gbm_bo *bo);
 
 int init_drm(struct drm *drm, const char *device, const int32_t prefW, const int32_t prefH);
-static void get_plane_id(int32_t *primaryPlane, int32_t *auxPlane);
+static void get_plane_id(int32_t *primaryPlane);
 static const struct drm * suppliment_atomic();
 const struct drm * init_drm_legacy(const char *device);
 const struct drm * init_drm_atomic(const char *device);

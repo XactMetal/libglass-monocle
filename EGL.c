@@ -605,14 +605,16 @@ void *cameraThread(void *vargp)
         
       printf("accept\n");
     }
-    
+      // Send DRM struct
+      int sent_bytes_drm = write(cl,&drm,sizeof(drm));
+      printf("Sent DRM %d\n", sent_bytes_drm);
       // Send FD here
-      send_fd(cl, dma_buf_fd);
+      send_fd(cl, drm.fd);
 
     while ( (rc=read(cl,buf,sizeof(buf))) > 0) {
       printf("read %u bytes: %.*s\n", rc, rc, buf);
         sleep(0.0001);
-        int ret = drm_plane_commit(drm.auxplane->plane->plane_id, frame_buffer_id, 0, 0);
+        //int ret = drm_plane_commit(drm.fd, frame_buffer_id, 0, 0);
     }
     if (rc == -1) {
       perror("read");
@@ -633,78 +635,6 @@ static int atomic_init_surface(EGLDisplay display, EGLSurface surface)
 {
     int ret;
     
-    // AUX FRAMEBUFFER
-    /* Request a dumb buffer */
-	struct drm_mode_create_dumb create_request = {
-		.width  = 512,
-		.height = 300,
-		.bpp    = 32
-	};
-	ret = ioctl(drm.fd, DRM_IOCTL_MODE_CREATE_DUMB, &create_request);
-
-	/* Bail out if we could not allocate a dumb buffer */
-	if (ret) {
-		printf("DBA failed\n");
-	}
-	/* Create a framebuffer, using the old method.
-	 */
-	ret = drmModeAddFB(
-		drm.fd,
-		512, 300,
-		24, 32, create_request.pitch,
-		create_request.handle, &frame_buffer_id
-	);
-	/* Without framebuffer, we won't do anything so bail out ! */
-	if (ret) {
-		printf("Could not add a framebuffer using drmModeAddFB\n");
-	} else {
-        printf("Aux fb id = %u\n", frame_buffer_id);
-    }
-    
-    struct drm_prime_handle prime_request = {
-		.handle = create_request.handle,
-		.flags  = DRM_CLOEXEC | DRM_RDWR,
-		.fd     = -1
-	};
-
-	ret = ioctl(drm.fd, DRM_IOCTL_PRIME_HANDLE_TO_FD, &prime_request);
-	dma_buf_fd = prime_request.fd;
-    /* If we could not export the buffer, bail out since that's the
-	 * purpose of our test */
-	if (ret || dma_buf_fd < 0) {
-		printf(
-			"Could not export buffer : %s (%d) - FD : %d\n",
-			strerror(ret), ret,
-			dma_buf_fd
- 		);
-	}
-
-	/* Map the exported buffer, using the PRIME File descriptor */
-	/* That ONLY works if the DRM driver implements gem_prime_mmap.
-	 * This function is not implemented in most of the DRM drivers for 
-	 * GPU with discrete memory. Meaning that it will surely fail with
-	 * Radeon, AMDGPU and Nouveau drivers for desktop cards ! */
-	primed_framebuffer = mmap(
-		0, create_request.size,	PROT_READ | PROT_WRITE, MAP_SHARED,
-		dma_buf_fd, 0);
-	ret = errno;
-    
-    printf("Buf size = %u\n",(uint32_t)create_request.size);
-    
-	if (primed_framebuffer == NULL || primed_framebuffer == MAP_FAILED) {
-		printf(
-			"Could not map buffer exported through PRIME : %s (%d)\n"
-			"Buffer : %p\n",
-			strerror(ret), ret,
-			primed_framebuffer
-		);
-	}
-	
-    for (uint_fast32_t p = 0; p < 30000; p++)
-			((uint32_t *) primed_framebuffer)[p] = 120;
-	printf("Buffer mapped !\n");
-    
-    // END AUX FRAMEBUFFER
     
 	/* Allow a modeset change for the first commit only. */
 	uint32_t flags = DRM_MODE_ATOMIC_NONBLOCK | DRM_MODE_ATOMIC_ALLOW_MODESET;
@@ -791,27 +721,16 @@ static int atomic_init_surface(EGLDisplay display, EGLSurface surface)
 		bo = next_bo;
 		
         
+        // Start server
+        pthread_t thread_id; 
+            printf("Init server thread\n"); 
+            pthread_create(&thread_id, NULL, cameraThread, NULL); 
+        
 		/*
 		 * Here you could also update drm plane layers if you want
 		 * hw composition
 		 */
 
-        // And that's what I'm gonna do
-        ret = drm_plane_commit(drm.auxplane->plane->plane_id, frame_buffer_id, 0, 1);
-        
-        if (ret) {
-            printf("failed aux plane %d: %d %d\n", drm.auxplane->plane->plane_id, ret, errno);
-            //return -1;
-        }
-        else {
-            pthread_t thread_id; 
-            printf("Init camera thread\n"); 
-            pthread_create(&thread_id, NULL, cameraThread, NULL); 
-            //pthread_join(thread_id, NULL); 
-            
-            printf("Framebuffer is at /proc/%d/fd/%d\n", getpid(), dma_buf_fd);
-        }
-		
     
 	 if (X_E_DEBUG) printf("Done atomic init surface\n");
 
@@ -819,18 +738,15 @@ static int atomic_init_surface(EGLDisplay display, EGLSurface surface)
 }
 static const struct drm * suppliment_atomic() {
 	int32_t plane_id = -EINVAL;
-	int32_t aux_plane_id = -EINVAL;
 	int ret;
     
-    drm.auxplane = NULL;
-
 	ret = drmSetClientCap(drm.fd, DRM_CLIENT_CAP_ATOMIC, 1);
 	if (ret) {
 		if (X_E_DEBUG) printf("no atomic modesetting support: %s\n", strerror(errno));
 		return NULL;
 	}
 
-	get_plane_id(&plane_id, &aux_plane_id);
+	get_plane_id(&plane_id);
 	if (plane_id == -EINVAL) {
 		if (X_E_DEBUG) printf("could not find a suitable plane\n");
 		return NULL;
@@ -841,10 +757,6 @@ static const struct drm * suppliment_atomic() {
 	 * plane/crtc/connector property info for one of each:
 	 */
 	drm.plane = calloc(1, sizeof(*drm.plane));
-	if (aux_plane_id != -EINVAL) {
-		if (X_E_DEBUG) printf("Found aux plane\n");
-		drm.auxplane = calloc(1, sizeof(*drm.auxplane));
-	}
 	drm.crtc = calloc(1, sizeof(*drm.crtc));
 	drm.connector = calloc(1, sizeof(*drm.connector));
 
@@ -858,10 +770,6 @@ static const struct drm * suppliment_atomic() {
 	} while (0)
 
 	get_resource(plane, plane, Plane, plane_id);
-	if (aux_plane_id != -EINVAL) {
-		if (X_E_DEBUG) printf("Get aux plane rsrc\n");
-		get_resource(auxplane, plane, Plane, aux_plane_id);
-	}
 	get_resource(crtc, crtc, Crtc, drm.crtc_id);
 	get_resource(connector, connector, Connector, drm.connector_id);
 
@@ -883,10 +791,6 @@ static const struct drm * suppliment_atomic() {
 	} while (0)
 
 	get_properties(plane, plane, PLANE, plane_id);
-	if (aux_plane_id != -EINVAL) {
-		if (X_E_DEBUG) printf("Get aux plane props\n");
-		get_properties(auxplane, plane, PLANE, aux_plane_id);
-	}
 	get_properties(crtc, crtc, CRTC, drm.crtc_id);
 	get_properties(connector, connector, CONNECTOR, drm.connector_id);
     
@@ -1056,11 +960,7 @@ static int atomic_flip(EGLDisplay display, EGLSurface surface)
 			gbm_surface_release_buffer(gbm.surface, bo);
 		bo = next_bo;
         
-        // Aux jawn
-        //for (uint_fast32_t p = 0; p < 30000; p++)
-		//	((uint32_t *) primed_framebuffer)[p] = colordd;
-       //s colordd = colordd == 254 ? 0 : colordd+1;
-        //ret = drm_plane_commit(drm.auxplane->plane->plane_id, frame_buffer_id, 0);
+        // AUX would go here
         
     //printf("Flp%d\n", flipIdx++);
 	return ret;
@@ -1175,7 +1075,7 @@ int init_drm(struct drm *drm, const char *device, const int32_t prefW, const int
  * Seems like there is some room for a drmModeObjectGetNamedProperty()
  * type helper in libdrm..
  */
-static void get_plane_id(int32_t *primaryPlane, int32_t *auxPlane)
+static void get_plane_id(int32_t *primaryPlane)
 {
 	drmModePlaneResPtr plane_resources;
 	uint32_t i, j;
@@ -1188,7 +1088,7 @@ static void get_plane_id(int32_t *primaryPlane, int32_t *auxPlane)
 
     printf("drmModeGetPlane counts %u\n", plane_resources->count_planes);
     
-	for (i = 0; (i < plane_resources->count_planes) && !(*primaryPlane != -EINVAL && *auxPlane != -EINVAL); i++) {
+	for (i = 0; (i < plane_resources->count_planes) && *primaryPlane == -EINVAL; i++) {
 		uint32_t id = plane_resources->planes[i];
         printf("drmModeGetPlane(%u)\n", id);
 		drmModePlanePtr plane = drmModeGetPlane(drm.fd, id);
@@ -1212,16 +1112,6 @@ static void get_plane_id(int32_t *primaryPlane, int32_t *auxPlane)
 					*primaryPlane = id;
                     
                     printf("drmModeGetPlane found primary plane\n");
-				} else if ((strcmp(p->name, "type") == 0) &&
-						(props->prop_values[j] == DRM_PLANE_TYPE_OVERLAY)) {
-					/* found our overlay plane, lets use that: */
-                    if (*primaryPlane != -EINVAL) {
-                        *auxPlane = id;
-                    } else {
-                        *primaryPlane = id;
-                    }
-					
-                    printf("drmModeGetPlane found aux plane\n");
 				}
 
 				drmModeFreeProperty(p);

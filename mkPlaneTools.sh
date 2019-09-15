@@ -1,1 +1,1 @@
-gcc  -fno-strict-aliasing -fPIC -fno-omit-frame-pointer -W -Wall -Wno-unused -Wno-parentheses -Werror=implicit-function-declaration -I/usr/include/drm  -O2 -DNDEBUG -marm -mfloat-abi=hard -mfpu=vfp -Werror -I./ -o PlaneTools PlaneTools.c
+gcc  -fno-strict-aliasing -fPIC -fno-omit-frame-pointer -W -Wall -Wno-unused -Wno-parentheses -Werror=implicit-function-declaration -I/usr/include/drm  -O2 -DNDEBUG -marm -mfloat-abi=hard -mfpu=vfp -Werror -I./ -L/usr/lib/arm-linux-gnueabihf -o PlaneTools PlaneTools.c -ldl -lm -ldrm

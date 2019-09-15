@@ -1,30 +1,3 @@
-/*
- * Copyright (c) 2014, Oracle and/or its affiliates. All rights reserved.
- * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
- *
- * This code is free software; you can redistribute it and/or modify it
- * under the terms of the GNU General Public License version 2 only, as
- * published by the Free Software Foundation.  Oracle designates this
- * particular file as subject to the "Classpath" exception as provided
- * by Oracle in the LICENSE file that accompanied this code.
- *
- * This code is distributed in the hope that it will be useful, but WITHOUT
- * ANY WARRANTY; without even the implied warranty of MERCHANTABILITY or
- * FITNESS FOR A PARTICULAR PURPOSE.  See the GNU General Public License
- * version 2 for more details (a copy is included in the LICENSE file that
- * accompanied this code).
- *
- * You should have received a copy of the GNU General Public License version
- * 2 along with this work; if not, write to the Free Software Foundation,
- * Inc., 51 Franklin St, Fifth Floor, Boston, MA 02110-1301 USA.
- *
- * Please contact Oracle, 500 Oracle Parkway, Redwood Shores, CA 94065 USA
- * or visit www.oracle.com if you need additional information or have any
- * questions.
- */
-
-#include <EGL/egl.h>
-
 #include "kms_common.h"
 
 // SHARED MEM
@@ -50,97 +23,11 @@
 
 #define X_E_DEBUG 1
 
-//   PFNEGLGETPLATFORMDISPLAYEXTPROC eglGetPlatformDisplayEXT;
-	PFNEGLCREATEIMAGEKHRPROC eglCreateImageKHR;
-	PFNEGLDESTROYIMAGEKHRPROC eglDestroyImageKHR;
-	PFNGLEGLIMAGETARGETTEXTURE2DOESPROC glEGLImageTargetTexture2DOES;
-	PFNEGLCREATESYNCKHRPROC eglCreateSyncKHR;
-	PFNEGLDESTROYSYNCKHRPROC eglDestroySyncKHR;
-	PFNEGLWAITSYNCKHRPROC eglWaitSyncKHR;
-	PFNEGLCLIENTWAITSYNCKHRPROC eglClientWaitSyncKHR;
-	PFNEGLDUPNATIVEFENCEFDANDROIDPROC eglDupNativeFenceFDANDROID;
-    
-static bool has_ext(const char *extension_list, const char *ext)
-{
-	const char *ptr = extension_list;
-	int len = strlen(ext);
-
-	if (ptr == NULL || *ptr == '\0')
-		return false;
-
-	while (true) {
-		ptr = strstr(ptr, ext);
-		if (!ptr)
-			return false;
-
-		if (ptr[len] == ' ' || ptr[len] == '\0')
-			return true;
-
-		ptr += len;
-	}
-}
-
-static inline int __egl_check(void *ptr, const char *name)
-{
-	if (!ptr) {
-		printf("no %s\n", name);
-		return -1;
-	}
-	return 0;
-}
-
-#define egl_check(name) __egl_check(name, #name)
-
 static struct drm drm= {
 	.kms_out_fence_fd = -1,
 };
-static struct gbm gbm;
 
 #define VOID2U64(x) ((uint64_t)(unsigned long)(x))
-
-static int add_connector_property(drmModeAtomicReq *req, uint32_t obj_id,
-					const char *name, uint64_t value)
-{
-	struct connector *obj = drm.connector;
-	unsigned int i;
-	int prop_id = 0;
-
-	for (i = 0 ; i < obj->props->count_props ; i++) {
-		if (strcmp(obj->props_info[i]->name, name) == 0) {
-			prop_id = obj->props_info[i]->prop_id;
-			break;
-		}
-	}
-
-	if (prop_id < 0) {
-		printf("no connector property: %s\n", name);
-		return -EINVAL;
-	}
-
-	return drmModeAtomicAddProperty(req, obj_id, prop_id, value);
-}
-
-static int add_crtc_property(drmModeAtomicReq *req, uint32_t obj_id,
-				const char *name, uint64_t value)
-{
-	struct crtc *obj = drm.crtc;
-	unsigned int i;
-	int prop_id = -1;
-
-	for (i = 0 ; i < obj->props->count_props ; i++) {
-		if (strcmp(obj->props_info[i]->name, name) == 0) {
-			prop_id = obj->props_info[i]->prop_id;
-			break;
-		}
-	}
-
-	if (prop_id < 0) {
-		printf("no crtc property: %s\n", name);
-		return -EINVAL;
-	}
-
-	return drmModeAtomicAddProperty(req, obj_id, prop_id, value);
-}
 
 static int add_plane_property(drmModeAtomicReq *req, uint32_t obj_id,
 				const char *name, uint64_t value)
@@ -164,6 +51,110 @@ static int add_plane_property(drmModeAtomicReq *req, uint32_t obj_id,
 
 	return drmModeAtomicAddProperty(req, obj_id, prop_id, value);
 }
+
+
+static void get_aux_plane_id(int32_t *auxPlane)
+{
+	drmModePlaneResPtr plane_resources;
+	uint32_t i, j;
+    
+	plane_resources = drmModeGetPlaneResources(drm.fd);
+	if (!plane_resources) {
+		printf("drmModeGetPlaneResources failed: %s\n", strerror(errno));
+		return;
+	}
+
+    printf("drmModeGetPlane counts %u\n", plane_resources->count_planes);
+    
+	for (i = 0; (i < plane_resources->count_planes) && *auxPlane == -EINVAL; i++) {
+		uint32_t id = plane_resources->planes[i];
+        printf("drmModeGetPlane(%u)\n", id);
+		drmModePlanePtr plane = drmModeGetPlane(drm.fd, id);
+		if (!plane) {
+			printf("drmModeGetPlane(%u) failed: %s\n", id, strerror(errno));
+			continue;
+		}
+
+		if (plane->possible_crtcs & (1 << drm.crtc_index)) {
+			drmModeObjectPropertiesPtr props =
+				drmModeObjectGetProperties(drm.fd, id, DRM_MODE_OBJECT_PLANE);
+
+			for (j = 0; j < props->count_props; j++) {
+				drmModePropertyPtr p =
+					drmModeGetProperty(drm.fd, props->props[j]);
+                
+                    printf("%u->%s = %d\n", id,p->name,(int32_t) props->prop_values[j]);
+				if ((strcmp(p->name, "type") == 0) &&
+						(props->prop_values[j] == DRM_PLANE_TYPE_OVERLAY)) {
+					/* found our primary plane, lets use that: */
+					*auxPlane = id;
+                    printf("drmModeGetPlane found aux plane\n");
+				}
+
+				drmModeFreeProperty(p);
+			}
+
+			drmModeFreeObjectProperties(props);
+		}
+
+		drmModeFreePlane(plane);
+	}
+
+	drmModeFreePlaneResources(plane_resources);
+
+	return;
+}
+
+
+static const struct drm * init_plane() {
+	int32_t plane_id = -EINVAL;
+	int ret;
+    
+	get_aux_plane_id(&plane_id);
+	if (plane_id == -EINVAL) {
+		if (X_E_DEBUG) printf("could not find a suitable plane\n");
+		return NULL;
+	}
+
+	drm.plane = calloc(1, sizeof(*drm.plane));
+
+#define get_resource(var, type, Type, id) do { 					\
+		drm.var->type = drmModeGet##Type(drm.fd, id);			\
+		if (!drm.var->type) {						\
+			if (X_E_DEBUG) printf("could not get %s %i: %s\n",			\
+					#type, id, strerror(errno));		\
+			return NULL;						\
+		}								\
+	} while (0)
+
+	get_resource(plane, plane, Plane, plane_id);
+
+#define get_properties(var, type, TYPE, id) do {					\
+		uint32_t i;							\
+		drm.var->props = drmModeObjectGetProperties(drm.fd,		\
+				id, DRM_MODE_OBJECT_##TYPE);			\
+		if (!drm.var->props) {						\
+			if (X_E_DEBUG) printf("could not get %s %u properties: %s\n", 		\
+					#type, id, strerror(errno));		\
+			return NULL;						\
+		}								\
+		drm.var->props_info = calloc(drm.var->props->count_props,	\
+				sizeof(drm.var->props_info));			\
+		for (i = 0; i < drm.var->props->count_props; i++) {		\
+			drm.var->props_info[i] = drmModeGetProperty(drm.fd,	\
+					drm.var->props->props[i]);		\
+		}								\
+	} while (0)
+
+	get_properties(plane, plane, PLANE, plane_id);
+    
+    return &drm;
+}
+
+
+
+
+
 
 static int px = 0, py = 0;
 static int pxs = 2, pys = 2;
@@ -204,32 +195,10 @@ static int drm_plane_commit(uint32_t plane_id, uint32_t fb_id, uint32_t flags, i
 
 //////////////////
 
-static void page_flip_handler(int fd, unsigned int frame,
-		  unsigned int sec, unsigned int usec, void *data)
-{
-	/* suppress 'unused parameter' warnings */
-	(void)fd, (void)frame, (void)sec, (void)usec;
-
-	int *waiting_for_flip = data;
-	*waiting_for_flip = 0;
-}
-
 static uint32_t frame_buffer_id = 1000;
 static uint8_t * primed_framebuffer;
 
-
-// A normal C function that is executed as a thread  
-// when its name is specified in pthread_create() 
-void *cameraThread(void *vargp) 
-{ 
-    while (1) {
-        sleep(0.0001);
-        int ret = drm_plane_commit(drm.auxplane->plane->plane_id, frame_buffer_id, 0, 0);
-    }
-    return NULL; 
-} 
-
-static int atomic_init_surface(EGLDisplay display, EGLSurface surface)
+static int atomic_init_surface()
 {
     int ret;
     
@@ -303,27 +272,12 @@ static int atomic_init_surface(EGLDisplay display, EGLSurface surface)
 	printf("Buffer mapped !\n");
     
     // END AUX FRAMEBUFFER
-//     
-        
-		/*
-		 * Here you could also update drm plane layers if you want
-		 * hw composition
-		 */
-
-        // And that's what I'm gonna do
-        ret = drm_plane_commit(drm.auxplane->plane->plane_id, frame_buffer_id, 0, 1);
+    
+        ret = drm_plane_commit(drm.plane->plane->plane_id, frame_buffer_id, 0, 1);
         
         if (ret) {
-            printf("failed aux plane %d: %d %d\n", drm.auxplane->plane->plane_id, ret, errno);
+            printf("failed aux plane %d: %d %d\n", drm.plane->plane->plane_id, ret, errno);
             //return -1;
-        }
-        else {
-            pthread_t thread_id; 
-            printf("Init camera thread\n"); 
-            pthread_create(&thread_id, NULL, cameraThread, NULL); 
-            //pthread_join(thread_id, NULL); 
-            
-            printf("Framebuffer is at /proc/%d/fd/%d\n", getpid(), dma_buf_fd);
         }
 		
     
@@ -333,78 +287,8 @@ static int atomic_init_surface(EGLDisplay display, EGLSurface surface)
 }
 
 
-/* Pick a plane.. something that at a minimum can be connected to
- * the chosen crtc, but prefer primary plane.
- *
- * Seems like there is some room for a drmModeObjectGetNamedProperty()
- * type helper in libdrm..
- */
-static void get_plane_id(int32_t *primaryPlane, int32_t *auxPlane)
-{
-	drmModePlaneResPtr plane_resources;
-	uint32_t i, j;
-    
-	plane_resources = drmModeGetPlaneResources(drm.fd);
-	if (!plane_resources) {
-		printf("drmModeGetPlaneResources failed: %s\n", strerror(errno));
-		return;
-	}
-
-    printf("drmModeGetPlane counts %u\n", plane_resources->count_planes);
-    
-	for (i = 0; (i < plane_resources->count_planes) && !(*primaryPlane != -EINVAL && *auxPlane != -EINVAL); i++) {
-		uint32_t id = plane_resources->planes[i];
-        printf("drmModeGetPlane(%u)\n", id);
-		drmModePlanePtr plane = drmModeGetPlane(drm.fd, id);
-		if (!plane) {
-			printf("drmModeGetPlane(%u) failed: %s\n", id, strerror(errno));
-			continue;
-		}
-
-		if (plane->possible_crtcs & (1 << drm.crtc_index)) {
-			drmModeObjectPropertiesPtr props =
-				drmModeObjectGetProperties(drm.fd, id, DRM_MODE_OBJECT_PLANE);
-
-			for (j = 0; j < props->count_props; j++) {
-				drmModePropertyPtr p =
-					drmModeGetProperty(drm.fd, props->props[j]);
-                
-                    printf("%u->%s = %d\n", id,p->name,(int32_t) props->prop_values[j]);
-				if ((strcmp(p->name, "type") == 0) &&
-						(props->prop_values[j] == DRM_PLANE_TYPE_PRIMARY)) {
-					/* found our primary plane, lets use that: */
-					*primaryPlane = id;
-                    
-                    printf("drmModeGetPlane found primary plane\n");
-				} else if ((strcmp(p->name, "type") == 0) &&
-						(props->prop_values[j] == DRM_PLANE_TYPE_OVERLAY)) {
-					/* found our overlay plane, lets use that: */
-                    if (*primaryPlane != -EINVAL) {
-                        *auxPlane = id;
-                    } else {
-                        *primaryPlane = id;
-                    }
-					
-                    printf("drmModeGetPlane found aux plane\n");
-				}
-
-				drmModeFreeProperty(p);
-			}
-
-			drmModeFreeObjectProperties(props);
-		}
-
-		drmModeFreePlane(plane);
-	}
-
-	drmModeFreePlaneResources(plane_resources);
-
-	return;
-}
-
 int fd_recv = -1;
 
-//char *socket_path = "./socket";
 char *socket_path = "\0jfxSocket0";
 
 static int recv_fd(int socket)  // receive fd from socket
@@ -461,22 +345,20 @@ int main(int argc, char *argv[]) {
     exit(-1);
   }
   
-  int remote_fd = recv_fd(fd);
-  printf("%d\n", remote_fd);
-  uint8_t * primed_framebuffer;
-primed_framebuffer = mmap(
-		0, 614400,	PROT_READ | PROT_WRITE, MAP_SHARED,
-		remote_fd, 0);
-
-	if (primed_framebuffer == NULL || primed_framebuffer == MAP_FAILED) {
-		printf(
-			"Could not map buffer exported through PRIME : %s (%d)\n"
-			"Buffer : %p\n",
-			strerror(errno), errno,
-			primed_framebuffer
-		);
-	}
-	printf("Buffer mapped !\n");
+  int bytes_to_receive = sizeof(drm);
+  int received_bytes = 0;
+  do {
+      received_bytes +=read(fd, ((uint8_t*)(&drm)) + received_bytes, bytes_to_receive - received_bytes);
+  } while (received_bytes != bytes_to_receive);
+  
+  printf("Recv %d/%d for DRM\n", received_bytes, bytes_to_receive);
+  
+  drm.fd = recv_fd(fd);
+  printf("%d\n", drm.fd);
+  init_plane();
+  
+  atomic_init_surface();
+  int ret = drm_plane_commit(drm.fd, frame_buffer_id, 0, 0);
     
     const uint32_t WIDTH = 512;
     const uint32_t HEIGHT = 300;
