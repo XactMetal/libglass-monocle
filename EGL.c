@@ -32,7 +32,10 @@
 // SHARED MEM
 #include <sys/ipc.h> 
 #include <sys/shm.h> 
-#include <pthread.h> 
+#include <pthread.h>
+#include <sys/types.h>
+#include <sys/socket.h>
+#include <sys/un.h>
 
 #include <sys/ioctl.h>
 #include <assert.h>
@@ -165,48 +168,34 @@ static int add_plane_property(drmModeAtomicReq *req, uint32_t obj_id,
 
 static int px = 0, py = 0;
 static int pxs = 2, pys = 2;
-static int drm_plane_commit(uint32_t plane_id, uint32_t fb_id, uint32_t flags)
+static int drm_plane_commit(uint32_t plane_id, uint32_t fb_id, uint32_t flags, int needsPropertySet)
 {
 	drmModeAtomicReq *req;
-	uint32_t blob_id;
 	int ret;
 
 	req = drmModeAtomicAlloc();
 
-	/*if (flags & DRM_MODE_ATOMIC_ALLOW_MODESET) {
-		if (add_connector_property(req, drm.connector_id, "CRTC_ID",
-						drm.crtc_id) < 0)
-				return -1;
-
-		if (drmModeCreatePropertyBlob(drm.fd, drm.mode, sizeof(*drm.mode),
-					      &blob_id) != 0)
-			return -1;
-
-		if (add_crtc_property(req, drm.crtc_id, "MODE_ID", blob_id) < 0)
-			return -1;
-
-		if (add_crtc_property(req, drm.crtc_id, "ACTIVE", 1) < 0)
-			return -1;
-	}*/
-    
     px+=pxs;
     py+=pys;
     if (px >= 512 || px <= 0) pxs *= -1;
     if (py >= 300 || py <= 0) pys *= -1;
     px+=pxs;
     py+=pys;
-
-	add_plane_property(req, plane_id, "FB_ID", fb_id);
-	add_plane_property(req, plane_id, "CRTC_ID", drm.crtc_id);
-	add_plane_property(req, plane_id, "SRC_X", 0);
-	add_plane_property(req, plane_id, "SRC_Y", 0);
-	add_plane_property(req, plane_id, "SRC_W", ((uint32_t)512) << 16);
-	add_plane_property(req, plane_id, "SRC_H", ((uint32_t)300) << 16);
-	add_plane_property(req, plane_id, "CRTC_X", px);
-	add_plane_property(req, plane_id, "CRTC_Y", py);
-	add_plane_property(req, plane_id, "CRTC_W", 512); // TODO
-	add_plane_property(req, plane_id, "CRTC_H", 300);
-
+    
+    if (needsPropertySet) {
+        add_plane_property(req, plane_id, "FB_ID", fb_id);
+        add_plane_property(req, plane_id, "CRTC_ID", drm.crtc_id);
+        add_plane_property(req, plane_id, "SRC_X", 0);
+        add_plane_property(req, plane_id, "SRC_Y", 0);
+        add_plane_property(req, plane_id, "SRC_W", ((uint32_t)512) << 16);
+        add_plane_property(req, plane_id, "SRC_H", ((uint32_t)300) << 16);
+        add_plane_property(req, plane_id, "CRTC_W", 512); // TODO
+        add_plane_property(req, plane_id, "CRTC_H", 300);
+    }
+// TODO
+        add_plane_property(req, plane_id, "CRTC_X", px);
+        add_plane_property(req, plane_id, "CRTC_Y", py);
+        
 	ret = drmModeAtomicCommit(drm.fd, req, flags, NULL);
 
 	drmModeAtomicFree(req);
@@ -214,7 +203,7 @@ static int drm_plane_commit(uint32_t plane_id, uint32_t fb_id, uint32_t flags)
 	return ret;
 }
 
-static int drm_atomic_commit(uint32_t plane_id, uint32_t fb_id, uint32_t flags)
+static int drm_atomic_commit(uint32_t plane_id, uint32_t fb_id, uint32_t flags, int needsPropertySet)
 {
 	drmModeAtomicReq *req;
 	uint32_t blob_id;
@@ -240,14 +229,16 @@ static int drm_atomic_commit(uint32_t plane_id, uint32_t fb_id, uint32_t flags)
 
 	add_plane_property(req, plane_id, "FB_ID", fb_id);
 	add_plane_property(req, plane_id, "CRTC_ID", drm.crtc_id);
-	add_plane_property(req, plane_id, "SRC_X", 0);
-	add_plane_property(req, plane_id, "SRC_Y", 0);
-	add_plane_property(req, plane_id, "SRC_W", drm.mode->hdisplay << 16);
-	add_plane_property(req, plane_id, "SRC_H", drm.mode->vdisplay << 16);
-	add_plane_property(req, plane_id, "CRTC_X", 0);
-	add_plane_property(req, plane_id, "CRTC_Y", 0);
-	add_plane_property(req, plane_id, "CRTC_W", drm.mode->hdisplay);
-	add_plane_property(req, plane_id, "CRTC_H", drm.mode->vdisplay);
+    if (needsPropertySet) {
+        add_plane_property(req, plane_id, "SRC_X", 0);
+        add_plane_property(req, plane_id, "SRC_Y", 0);
+        add_plane_property(req, plane_id, "SRC_W", drm.mode->hdisplay << 16);
+        add_plane_property(req, plane_id, "SRC_H", drm.mode->vdisplay << 16);
+        add_plane_property(req, plane_id, "CRTC_X", 0);
+        add_plane_property(req, plane_id, "CRTC_Y", 0);
+        add_plane_property(req, plane_id, "CRTC_W", drm.mode->hdisplay);
+        add_plane_property(req, plane_id, "CRTC_H", drm.mode->vdisplay);
+    }
 
 	if (drm.kms_in_fence_fd != -1) {
 		add_crtc_property(req, drm.crtc_id, "OUT_FENCE_PTR",
@@ -546,16 +537,95 @@ static EGLSyncKHR kms_fence = NULL;   /* in-fence to gpu, out-fence from kms */
 
 static uint32_t frame_buffer_id = 1000;
 static uint8_t * primed_framebuffer;
+static int dma_buf_fd ;
 
+static void send_fd(int socket, int fd)  // send fd by socket
+{
+    struct msghdr msg = { 0 };
+    char buf[CMSG_SPACE(sizeof(fd))];
+    memset(buf, '\0', sizeof(buf));
+    struct iovec io = { .iov_base = "ABC", .iov_len = 3 };
 
-// A normal C function that is executed as a thread  
-// when its name is specified in pthread_create() 
+    msg.msg_iov = &io;
+    msg.msg_iovlen = 1;
+    msg.msg_control = buf;
+    msg.msg_controllen = sizeof(buf);
+
+    struct cmsghdr * cmsg = CMSG_FIRSTHDR(&msg);
+    cmsg->cmsg_level = SOL_SOCKET;
+    cmsg->cmsg_type = SCM_RIGHTS;
+    cmsg->cmsg_len = CMSG_LEN(sizeof(fd));
+
+    *((int *) CMSG_DATA(cmsg)) = fd;
+
+    msg.msg_controllen = CMSG_SPACE(sizeof(fd));
+
+    if (sendmsg(socket, &msg, 0) < 0)
+        fprintf(stderr, "Failed to send message\n");
+}
+
+char *socket_path = "\0jfxSocket0";
 void *cameraThread(void *vargp) 
 { 
-    while (1) {
-        sleep(0.01);
-        int ret = drm_plane_commit(drm.auxplane->plane->plane_id, frame_buffer_id, 0);
+    
+  struct sockaddr_un addr;
+  char buf[100];
+  int fd,cl,rc;
+
+  if ( (fd = socket(AF_UNIX, SOCK_STREAM, 0)) == -1) {
+    perror("socket error");
+    exit(-1);
+  }
+
+  memset(&addr, 0, sizeof(addr));
+  addr.sun_family = AF_UNIX;
+  if (*socket_path == '\0') {
+    *addr.sun_path = '\0';
+    strncpy(addr.sun_path+1, socket_path+1, sizeof(addr.sun_path)-2);
+  } else {
+    strncpy(addr.sun_path, socket_path, sizeof(addr.sun_path)-1);
+    unlink(socket_path);
+  }
+
+  if (bind(fd, (struct sockaddr*)&addr, sizeof(addr)) == -1) {
+    perror("bind error");
+    exit(-1);
+  }
+
+  if (listen(fd, 5) == -1) {
+    perror("listen error");
+    exit(-1);
+  }
+
+  while (1) {
+    if ( (cl = accept(fd, NULL, NULL)) == -1) {
+      perror("accept erron");
+      continue;
+    } else {
+        
+      printf("accept\n");
     }
+    
+      // Send FD here
+      send_fd(cl, dma_buf_fd);
+
+    while ( (rc=read(cl,buf,sizeof(buf))) > 0) {
+      printf("read %u bytes: %.*s\n", rc, rc, buf);
+        sleep(0.0001);
+        int ret = drm_plane_commit(drm.auxplane->plane->plane_id, frame_buffer_id, 0, 0);
+    }
+    if (rc == -1) {
+      perror("read");
+      exit(-1);
+    }
+    else if (rc == 0) {
+      printf("EOF\n");
+      close(cl);
+    }
+    
+  }
+    
+    
     return NULL; 
 } 
 
@@ -598,7 +668,7 @@ static int atomic_init_surface(EGLDisplay display, EGLSurface surface)
 	};
 
 	ret = ioctl(drm.fd, DRM_IOCTL_PRIME_HANDLE_TO_FD, &prime_request);
-	int const dma_buf_fd = prime_request.fd;
+	dma_buf_fd = prime_request.fd;
     /* If we could not export the buffer, bail out since that's the
 	 * purpose of our test */
 	if (ret || dma_buf_fd < 0) {
@@ -618,7 +688,9 @@ static int atomic_init_surface(EGLDisplay display, EGLSurface surface)
 		0, create_request.size,	PROT_READ | PROT_WRITE, MAP_SHARED,
 		dma_buf_fd, 0);
 	ret = errno;
-
+    
+    printf("Buf size = %u\n",(uint32_t)create_request.size);
+    
 	if (primed_framebuffer == NULL || primed_framebuffer == MAP_FAILED) {
 		printf(
 			"Could not map buffer exported through PRIME : %s (%d)\n"
@@ -708,7 +780,7 @@ static int atomic_init_surface(EGLDisplay display, EGLSurface surface)
 			eglDestroySyncKHR(display, kms_fence);
 		}
 
-		ret = drm_atomic_commit(drm.plane->plane->plane_id, fb->fb_id, flags);
+		ret = drm_atomic_commit(drm.plane->plane->plane_id, fb->fb_id, flags, 1);
 		if (ret) {
 			printf("failed to commit: %s\n", strerror(errno));
 			return -1;
@@ -725,19 +797,21 @@ static int atomic_init_surface(EGLDisplay display, EGLSurface surface)
 		 */
 
         // And that's what I'm gonna do
-        ret = drm_plane_commit(drm.auxplane->plane->plane_id, frame_buffer_id, 0);
+        ret = drm_plane_commit(drm.auxplane->plane->plane_id, frame_buffer_id, 0, 1);
         
         if (ret) {
-			printf("failed aux plane %d: %d %d\n", drm.auxplane->plane->plane_id, ret, errno);
-			//return -1;
-		}
+            printf("failed aux plane %d: %d %d\n", drm.auxplane->plane->plane_id, ret, errno);
+            //return -1;
+        }
+        else {
+            pthread_t thread_id; 
+            printf("Init camera thread\n"); 
+            pthread_create(&thread_id, NULL, cameraThread, NULL); 
+            //pthread_join(thread_id, NULL); 
+            
+            printf("Framebuffer is at /proc/%d/fd/%d\n", getpid(), dma_buf_fd);
+        }
 		
-		
-   
-    pthread_t thread_id; 
-    printf("Init camera thread\n"); 
-    pthread_create(&thread_id, NULL, cameraThread, NULL); 
-    //pthread_join(thread_id, NULL); 
     
 	 if (X_E_DEBUG) printf("Done atomic init surface\n");
 
@@ -971,7 +1045,7 @@ static int atomic_flip(EGLDisplay display, EGLSurface surface)
 		 * hw composition
 		 */
         
-		ret = drm_atomic_commit(drm.plane->plane->plane_id, fb->fb_id, flags);
+		ret = drm_atomic_commit(drm.plane->plane->plane_id, fb->fb_id, flags, 0);
 		if (ret) {
 			printf("failed to commit: %s\n", strerror(errno));
 			return -1;
@@ -983,9 +1057,9 @@ static int atomic_flip(EGLDisplay display, EGLSurface surface)
 		bo = next_bo;
         
         // Aux jawn
-        for (uint_fast32_t p = 0; p < 30000; p++)
-			((uint32_t *) primed_framebuffer)[p] = colordd;
-        colordd = colordd == 254 ? 0 : colordd+1;
+        //for (uint_fast32_t p = 0; p < 30000; p++)
+		//	((uint32_t *) primed_framebuffer)[p] = colordd;
+       //s colordd = colordd == 254 ? 0 : colordd+1;
         //ret = drm_plane_commit(drm.auxplane->plane->plane_id, frame_buffer_id, 0);
         
     //printf("Flp%d\n", flipIdx++);

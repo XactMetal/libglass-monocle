@@ -168,26 +168,4 @@ enum mode {
 	VIDEO,         /* video textured cube */
 };
 
-const struct egl * init_cube_smooth(const struct gbm *gbm, int samples);
-const struct egl * init_cube_tex(const struct gbm *gbm, enum mode mode, int samples);
-
-#ifdef HAVE_GST
-
-struct decoder;
-struct decoder * video_init(const struct egl *egl, const struct gbm *gbm, const char *filename);
-EGLImage video_frame(struct decoder *dec);
-void video_deinit(struct decoder *dec);
-
-const struct egl * init_cube_video(const struct gbm *gbm, const char *video, int samples);
-
-#else
-static inline const struct egl *
-init_cube_video(const struct gbm *gbm, const char *video, int samples)
-{
-	(void)gbm; (void)video; (void)samples;
-	printf("no GStreamer support!\n");
-	return NULL;
-}
-#endif
-
 #endif /* _COMMON_H */
