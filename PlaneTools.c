@@ -325,6 +325,10 @@ int main(int argc, char *argv[]) {
   char * getFDCmd = "getFD";
   int fd,rc;
   
+  drmVBlank blank;
+  blank.request.type = DRM_VBLANK_RELATIVE; // Use relative seq number
+  blank.request.sequence = 1; // Wait one flip
+  
 
   if ( (fd = socket(AF_UNIX, SOCK_STREAM, 0)) == -1) {
     perror("socket error");
@@ -368,6 +372,9 @@ int main(int argc, char *argv[]) {
     uint_fast32_t p;
     struct timeval timee;
 	while (1) {
+  blank.request.type = DRM_VBLANK_RELATIVE; // Use relative seq number
+  blank.request.sequence = 1; // Wait one flip
+        drmWaitVBlank(drm.fd, &blank);
         gettimeofday(&timee, NULL);
         xrev = (timee.tv_usec / 1000 / 10 + timee.tv_sec * 100);
         yrev = (timee.tv_usec / 1000 / 100 + timee.tv_sec * 10);
@@ -376,6 +383,9 @@ int main(int argc, char *argv[]) {
             y = p >> 9;
             ((uint32_t*)primed_framebuffer)[p] = (((x*256/WIDTH)+xrev)<<8) + (((y*256/HEIGHT)+yrev)<<16);
         }
+  blank.request.type = DRM_VBLANK_RELATIVE; // Use relative seq number
+  blank.request.sequence = 1; // Wait one flip
+        drmWaitVBlank(drm.fd, &blank);
     }
 	
   
