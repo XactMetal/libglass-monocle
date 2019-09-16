@@ -862,23 +862,27 @@ static int legacy_flip(const struct gbm *gbm, EGLDisplay display, EGLSurface sur
 }
 
 static int swapIdx = 0, flipIdx = 0;
-static int doSwapBuffers(EGLDisplay display, EGLSurface surface) {
+static int waitForDrmFence(EGLDisplay display, EGLSurface surface) {
     
-    // This part is in the wrong spot; should be pre-egl drawing
     if (drm.kms_out_fence_fd != -1) {
-			kms_fence = create_fence(display, drm.kms_out_fence_fd);
-			assert(kms_fence);
+        kms_fence = create_fence(display, drm.kms_out_fence_fd);
+        assert(kms_fence);
 
-			/* driver now has ownership of the fence fd: */
-			drm.kms_out_fence_fd = -1;
+        /* driver now has ownership of the fence fd: */
+        drm.kms_out_fence_fd = -1;
 
-			/* wait "on the gpu" (ie. this won't necessarily block, but
-			 * will block the rendering until fence is signaled), until
-			 * the previous pageflip completes so we don't render into
-			 * the buffer that is still on screen.
-			 */
-			eglWaitSyncKHR(display, kms_fence, 0);
-		}
+        /* wait "on the gpu" (ie. this won't necessarily block, but
+            * will block the rendering until fence is signaled), until
+            * the previous pageflip completes so we don't render into
+            * the buffer that is still on screen.
+            */
+        eglWaitSyncKHR(display, kms_fence, 0);
+    }
+    
+    return 0;
+}
+
+static int doSwapBuffers(EGLDisplay display, EGLSurface surface) {
     
     // Swap buffers with fence
     gpu_fence = create_fence(display, EGL_NO_NATIVE_FENCE_FD_ANDROID);
@@ -1300,6 +1304,16 @@ JNIEXPORT jboolean JNICALL Java_com_sun_glass_ui_monocle_EGL_eglSwapBuffers
         return JNI_FALSE;
     }
 }
+
+JNIEXPORT jboolean JNICALL Java_com_sun_glass_ui_monocle_EGL_waitForDrmFence
+    (JNIEnv *UNUSED(env), jclass UNUSED(clazz), jlong eglDisplay, jlong eglSurface) {
+    if (waitForDrmFence(asPtr(eglDisplay), asPtr(eglSurface))) {
+        return JNI_TRUE;
+    } else {
+        return JNI_FALSE;
+    }
+}
+
 
 JNIEXPORT jboolean JNICALL Java_com_sun_glass_ui_monocle_EGL_drmInitBuffers
     (JNIEnv *UNUSED(env), jclass UNUSED(clazz), jlong eglDisplay, jlong eglSurface) {

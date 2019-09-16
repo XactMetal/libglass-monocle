@@ -240,6 +240,7 @@ class EGL {
 
     native boolean drmInitBuffers(long eglDisplay, long eglSurface);
     native boolean drmSwapBuffers(long eglDisplay, long eglSurface);
+    native boolean waitForDrmFence(long eglDisplay, long eglSurface);
 
     /** Convert an EGL error code such as EGL_BAD_CONTEXT to a string
      * representation.
