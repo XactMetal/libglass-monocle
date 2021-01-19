@@ -11,6 +11,8 @@ javac -cp bin/ com/sun/glass/ui/monocle/AcceleratedScreen.java
 jar -uf /tmp/jfxrt.jar com/sun/glass/ui/monocle/AcceleratedScreen.class
 javac -cp bin/ com/sun/glass/ui/monocle/LinuxStatefulMultiTouchProcessor.java
 jar -uf /tmp/jfxrt.jar com/sun/glass/ui/monocle/LinuxStatefulMultiTouchProcessor.class
+javac -cp bin/ com/sun/glass/ui/monocle/NativePlatformFactory.java
+jar -uf /tmp/jfxrt.jar com/sun/glass/ui/monocle/NativePlatformFactory.class
 
 echo "Done"
 rm -R bin/
