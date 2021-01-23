@@ -51,7 +51,7 @@
 
 #define X_E_DEBUG 1
 
-//   PFNEGLGETPLATFORMDISPLAYEXTPROC eglGetPlatformDisplayEXT;
+        PFNEGLGETPLATFORMDISPLAYEXTPROC eglGetPlatformDisplayEXT;
 	PFNEGLCREATEIMAGEKHRPROC eglCreateImageKHR;
 	PFNEGLDESTROYIMAGEKHRPROC eglDestroyImageKHR;
 	PFNGLEGLIMAGETARGETTEXTURE2DOESPROC glEGLImageTargetTexture2DOES;
@@ -354,8 +354,27 @@ JNIEXPORT jlong JNICALL Java_com_sun_glass_ui_monocle_EGL_eglGetGBMDisplay
     // EGLNativeDisplayType is defined differently on different systems; can be an int or a ptr so cast with care
 
     //EGLDisplay dpy = eglGetDisplay(((EGLNativeDisplayType) (unsigned long)(display)));
+ 
+    #define get_proc_client(ext, name) do { \
+		if (has_ext(egl_exts_client, #ext)) \
+			name = (void *)eglGetProcAddress(#name); \
+	} while (0)
+
+    const char *egl_exts_client;
+    egl_exts_client = eglQueryString(EGL_NO_DISPLAY, EGL_EXTENSIONS);
+    get_proc_client(EGL_EXT_platform_base, eglGetPlatformDisplayEXT);
+    
+    EGLDisplay dpy;
+
+    if (eglGetPlatformDisplayEXT) {
+	printf("TRACE: valid ptr to eglGetPlatformDisplayEXT\n");
+        dpy = eglGetPlatformDisplayEXT(EGL_PLATFORM_GBM_KHR, gbm.dev, NULL);
+    } else {
+	printf("TRACE: INvalid ptr to eglGetPlatformDisplayEXT\n");
+        dpy = eglGetDisplay((void *)(gbm.dev));
+    }
+
     jlong castWindow = asJLong(gbm.surface);
-    EGLDisplay dpy = eglGetDisplay((void *)(gbm.dev));
     (*env)->SetLongArrayRegion(env, eglWindowRef, 0, 1, &castWindow);
     return asJLong(dpy);
 }
@@ -1184,7 +1203,8 @@ JNIEXPORT jboolean JNICALL Java_com_sun_glass_ui_monocle_EGL_eglInitialize
     (JNIEnv *env, jclass UNUSED(clazz), jlong eglDisplay, jintArray majorArray,
      jintArray minorArray){
 
-    EGLint major, minor;
+       EGLint major, minor;
+
     if (eglInitialize(asPtr(eglDisplay), &major, &minor)) {
          (*env)->SetIntArrayRegion(env, majorArray, 0, 1, &major);
          (*env)->SetIntArrayRegion(env, minorArray, 0, 1, &minor);
