@@ -49,7 +49,7 @@
 #include <sys/select.h>
 #include <sys/mman.h>
 
-#define X_E_DEBUG 1
+#define X_E_DEBUG 0
 
         PFNEGLGETPLATFORMDISPLAYEXTPROC eglGetPlatformDisplayEXT;
 	PFNEGLCREATEIMAGEKHRPROC eglCreateImageKHR;
