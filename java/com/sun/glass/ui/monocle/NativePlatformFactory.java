@@ -94,10 +94,10 @@ public abstract class NativePlatformFactory {
                     factoryClassName = "com.sun.glass.ui.monocle."
                             + factoryName + "PlatformFactory";
                 }
-                //if (MonocleSettings.settings.tracePlatformConfig) {
+                if (MonocleSettings.settings.tracePlatformConfig) {
                     System.out.printf("Trying platform %s with class %s\n",
                                              factoryName, factoryClassName);
-                //}
+                }
                 try {
                     final ClassLoader loader = NativePlatformFactory.class.getClassLoader();
                     final Class<?> clazz = Class.forName(factoryClassName, false, loader);
@@ -105,7 +105,7 @@ public abstract class NativePlatformFactory {
                         throw new IllegalArgumentException("Unrecognized Monocle platform: "
                                 + factoryClassName);
                     } else {
-			System.out.println("Matched monocle platform " + clazz);
+			//System.out.println("Matched monocle platform " + clazz);
                     }
                     NativePlatformFactory npf = (NativePlatformFactory) clazz.newInstance();
                     if (//npf.matches() &&
