@@ -367,10 +367,10 @@ JNIEXPORT jlong JNICALL Java_com_sun_glass_ui_monocle_EGL_eglGetGBMDisplay
     EGLDisplay dpy;
 
     if (eglGetPlatformDisplayEXT) {
-	printf("TRACE: valid ptr to eglGetPlatformDisplayEXT\n");
+	if (X_E_DEBUG) printf("TRACE: valid ptr to eglGetPlatformDisplayEXT\n");
         dpy = eglGetPlatformDisplayEXT(EGL_PLATFORM_GBM_KHR, gbm.dev, NULL);
     } else {
-	printf("TRACE: INvalid ptr to eglGetPlatformDisplayEXT\n");
+	if (X_E_DEBUG) printf("TRACE: INvalid ptr to eglGetPlatformDisplayEXT\n");
         dpy = eglGetDisplay((void *)(gbm.dev));
     }
 
@@ -1105,18 +1105,18 @@ static void get_plane_id(int32_t *primaryPlane)
     
 	plane_resources = drmModeGetPlaneResources(drm.fd);
 	if (!plane_resources) {
-		printf("drmModeGetPlaneResources failed: %s\n", strerror(errno));
+		if (X_E_DEBUG) printf("drmModeGetPlaneResources failed: %s\n", strerror(errno));
 		return;
 	}
 
-    printf("drmModeGetPlane counts %u\n", plane_resources->count_planes);
+    if (X_E_DEBUG) printf("drmModeGetPlane counts %u\n", plane_resources->count_planes);
     
 	for (i = 0; (i < plane_resources->count_planes) && *primaryPlane == -EINVAL; i++) {
 		uint32_t id = plane_resources->planes[i];
-        printf("drmModeGetPlane(%u)\n", id);
+        if (X_E_DEBUG) printf("drmModeGetPlane(%u)\n", id);
 		drmModePlanePtr plane = drmModeGetPlane(drm.fd, id);
 		if (!plane) {
-			printf("drmModeGetPlane(%u) failed: %s\n", id, strerror(errno));
+			if (X_E_DEBUG) printf("drmModeGetPlane(%u) failed: %s\n", id, strerror(errno));
 			continue;
 		}
 
@@ -1128,13 +1128,13 @@ static void get_plane_id(int32_t *primaryPlane)
 				drmModePropertyPtr p =
 					drmModeGetProperty(drm.fd, props->props[j]);
                 
-                    printf("%u->%s = %d\n", id,p->name,(int32_t) props->prop_values[j]);
+                    if (X_E_DEBUG) printf("%u->%s = %d\n", id,p->name,(int32_t) props->prop_values[j]);
 				if ((strcmp(p->name, "type") == 0) &&
 						(props->prop_values[j] == DRM_PLANE_TYPE_PRIMARY)) {
 					/* found our primary plane, lets use that: */
 					*primaryPlane = id;
                     
-                    printf("drmModeGetPlane found primary plane\n");
+                    if (X_E_DEBUG) printf("drmModeGetPlane found primary plane\n");
 				}
 
 				drmModeFreeProperty(p);
