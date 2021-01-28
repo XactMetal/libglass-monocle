@@ -20,6 +20,8 @@ javac -cp bin/ javafx/beans/property/StringPropertyBase.java
 jar -uf /tmp/jfxrt.jar com/sun/javafx/binding/*.class
 jar -uf /tmp/jfxrt.jar javafx/beans/property/*.class
 
+javac -cp bin/ com/sun/glass/ui/monocle/MX6Cursor.java
+jar -uf /tmp/jfxrt.jar com/sun/glass/ui/monocle/MX6Cursor.class
 javac -cp bin/ com/sun/glass/ui/monocle/EGL.java
 jar -uf /tmp/jfxrt.jar com/sun/glass/ui/monocle/EGL.class
 cp com/sun/glass/ui/monocle/EGL.class bin/com/sun/glass/ui/monocle/EGL.class
