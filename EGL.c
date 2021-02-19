@@ -742,7 +742,7 @@ static int atomic_init_surface(EGLDisplay display, EGLSurface surface)
         
         // Start server
         pthread_t thread_id; 
-            printf("Init server thread\n"); 
+            if (X_E_DEBUG) printf("Init server thread\n"); 
             pthread_create(&thread_id, NULL, cameraThread, NULL); 
         
 		/*
