@@ -109,51 +109,31 @@ class MX6Cursor extends NativeCursor {
     }
 
     MX6Cursor() {
-        try {
-            SysFS.write("/sys/class/graphics/fb0/blank", "0");
-            system = LinuxSystem.getLinuxSystem();
-            LinuxSystem.FbVarScreenInfo screen = new LinuxSystem.FbVarScreenInfo();
-            fd = system.open("/dev/fb0", LinuxSystem.O_RDWR);
-            if (fd == -1) {
-                throw new IOException(system.getErrorMessage());
-            }
-            system.ioctl(fd, LinuxSystem.FBIOGET_VSCREENINFO, screen.p);
-            screen.setRes(screen.p, CURSOR_WIDTH, CURSOR_HEIGHT);
-            screen.setVirtualRes(screen.p, CURSOR_WIDTH, CURSOR_HEIGHT);
-            screen.setOffset(screen.p, 0, 0);
-            screen.setActivate(screen.p, 0);
-            // set up cursor as 16-bit
-            screen.setBitsPerPixel(screen.p, 16);
-            screen.setRed(screen.p, 5, 11);
-            screen.setGreen(screen.p, 6, 5);
-            screen.setBlue(screen.p, 5, 0);
-            screen.setTransp(screen.p, 0, 0);
-            system.ioctl(fd, LinuxSystem.FBIOPUT_VSCREENINFO, screen.p);
-            system.ioctl(fd, LinuxSystem.FBIOBLANK, LinuxSystem.FB_BLANK_UNBLANK);
+        system = LinuxSystem.getLinuxSystem();
+        LinuxSystem.FbVarScreenInfo screen = new LinuxSystem.FbVarScreenInfo();
+        screen.setRes(screen.p, CURSOR_WIDTH, CURSOR_HEIGHT);
+        screen.setVirtualRes(screen.p, CURSOR_WIDTH, CURSOR_HEIGHT);
+        screen.setOffset(screen.p, 0, 0);
+        screen.setActivate(screen.p, 0);
+        // set up cursor as 16-bit
+        screen.setBitsPerPixel(screen.p, 16);
+        screen.setRed(screen.p, 5, 11);
+        screen.setGreen(screen.p, 6, 5);
+        screen.setBlue(screen.p, 5, 0);
+        screen.setTransp(screen.p, 0, 0);
 
-            MXCFBColorKey key = new MXCFBColorKey();
-            key.setEnable(1);
-            key.setColorKey(((SHORT_KEY & 0xf800)<<8)
-                            | ((SHORT_KEY & 0xe000)<<3)
-                            | ((SHORT_KEY & 0x07e0)<<5)
-                            | ((SHORT_KEY & 0x0600)>>1)
-                            | ((SHORT_KEY & 0x001f)<<3)
-                            | ((SHORT_KEY & 0x001c)>>2));
-            int MXCFB_SET_CLR_KEY = system.IOW('F', 0x22, key.sizeof());
-            if (system.ioctl(fd, MXCFB_SET_CLR_KEY, key.p) < 0) {
-                throw new IOException(system.strerror(system.errno()));
-            }
-        } catch (IOException e) {
-            if (fd != -1) {
-                LinuxSystem.getLinuxSystem().close(fd);
-                fd = -1;
-            }
-            e.printStackTrace();
-            System.err.println("Failed to initialize i.MX6 cursor");
-        }
-        NativeScreen screen = NativePlatformFactory.getNativePlatform().getScreen();
-        screenWidth = screen.getWidth();
-        screenHeight = screen.getHeight();
+        MXCFBColorKey key = new MXCFBColorKey();
+        key.setEnable(1);
+        key.setColorKey(((SHORT_KEY & 0xf800)<<8)
+                        | ((SHORT_KEY & 0xe000)<<3)
+                        | ((SHORT_KEY & 0x07e0)<<5)
+                        | ((SHORT_KEY & 0x0600)>>1)
+                        | ((SHORT_KEY & 0x001f)<<3)
+                        | ((SHORT_KEY & 0x001c)>>2));
+
+        NativeScreen screenN = NativePlatformFactory.getNativePlatform().getScreen();
+        screenWidth = screenN.getWidth();
+        screenHeight = screenN.getHeight();
     }
 
     @Override
@@ -165,8 +145,6 @@ class MX6Cursor extends NativeCursor {
     void setVisibility(boolean visibility) {
         alpha.setEnable(1);
         alpha.setAlpha(visibility ? 255 : 0);
-        int MXCFB_SET_GBL_ALPHA = system.IOW('F', 0x21, alpha.sizeof());
-        system.ioctl(fd, MXCFB_SET_GBL_ALPHA, alpha.p);
         isVisible = visibility;
         updateImage(true);
     }
@@ -183,12 +161,6 @@ class MX6Cursor extends NativeCursor {
                                            16, SHORT_KEY);
                 offsetX = newOffsetX;
                 offsetY = newOffsetY;
-                system.lseek(fd, 0, LinuxSystem.SEEK_SET);
-                if (system.write(fd, offsetCursorByteBuffer,
-                                 0, offsetCursorByteBuffer.capacity()) < 0) {
-                    System.err.println("Failed to write to i.MX6 cursor: "
-                                       + system.getErrorMessage());
-                }
             }
         }
     }
@@ -212,8 +184,6 @@ class MX6Cursor extends NativeCursor {
         cursorY = y;
         updateImage(false);
         pos.set(x, y);
-        int MXCFB_SET_OVERLAY_POS = system.IOWR('F', 0x24, pos.sizeof());
-        system.ioctl(fd, MXCFB_SET_OVERLAY_POS, pos.p);
     }
 
     @Override
